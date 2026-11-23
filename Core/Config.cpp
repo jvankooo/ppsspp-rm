@@ -1358,8 +1358,6 @@ static constexpr ConfigSetting controlSettings[] = {
 		.Label(I18NCat::CONTROLS, "Rumble"),
 	ConfigSetting("RumbleStrength", SETTING(g_Config, iRumbleStrength), 3, CfgFlag::DEFAULT)
 		.Label(I18NCat::CONTROLS, "Rumble strength").Choices(rumbleStrengthNames),
-	ConfigSetting("RumbleLog", SETTING(g_Config, bRumbleLog), false, CfgFlag::DEFAULT)
-		.Label(I18NCat::CONTROLS, "Rumble log (research)"),
 	
 #if PPSSPP_PLATFORM(WINDOWS)
 	ConfigSetting("IgnoreWindowsKey", SETTING(g_Config, bIgnoreWindowsKey), false, CfgFlag::PER_GAME)

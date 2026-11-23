@@ -194,12 +194,8 @@ static void BuildRumbleSettings(SettingsPage *page) {
 		page->Choice("Test: impact sound").OnClick([](UI::EventParams &) { Rumble::TestPulse(2); }).EnabledFunc(enabled);
 	}
 
-	page->Header("Rumble research");
-	page->Description({ I18NCat::CONTROLS, "RumbleResearchAbout", "For making and tuning profiles: a log of every rumble (PSP/RUMBLE/logs) and RAM snapshots (PSP/RUMBLE/snapshots) to compare on a PC. See docs/rumble.md." });
-	page->Setting(&g_Config.bRumbleLog).OnChange([](UI::EventParams &) {
-		// Opens or closes the log.
-		Rumble::ReloadProfile();
-	}).Hint({ I18NCat::CONTROLS, "RumbleLogHint", "Starts a new log file when the game continues" });
+	page->Header("Profile tools");
+	page->Description({ I18NCat::CONTROLS, "RumbleToolsAbout", "For making rumble profiles: RAM snapshots (PSP/RUMBLE/snapshots) to compare on a PC. See docs/rumble.md." });
 	page->Choice("Save RAM snapshot...").OnClick([host](UI::EventParams &) {
 		System_InputBoxGetString(host->PageRequesterToken(), T(I18NCat::CONTROLS, "Snapshot label (what is happening now)"), "", false, [](std::string_view label, int) {
 			std::string file = Rumble::SaveSnapshot(std::string(label));
@@ -214,14 +210,6 @@ static void BuildRumbleSettings(SettingsPage *page) {
 		Rumble::ReloadProfile();
 		g_OSD.Show(OSDType::MESSAGE_INFO, T(I18NCat::CONTROLS, "The rumble profile reloads when the game continues"), 3.0f);
 	});
-	page->Info("Rumbles so far", StringFromFormat("%llu", (unsigned long long)status.rumblesFired));
-	for (const std::string &line : status.valueLines) {
-		size_t eq = line.find(" = ");
-		if (eq == std::string::npos) {
-			continue;
-		}
-		page->Info(SettingText::Raw(KeepText(line.substr(0, eq))), line.substr(eq + 3));
-	}
 }
 
 void BuildControlsSettings(SettingsPage *page) {

@@ -184,11 +184,16 @@ UI::Button *UndoButton(std::string_view title) {
 }
 
 void CompactMenu(UI::ViewGroup *group) {
+	// Tall items with gaps between them (like PPSSPP's settings lists), so the pause menu reads well
+	// handheld and on a TV. Eight items still fit the 720p screen without scrolling.
+	if (auto *linear = dynamic_cast<UI::LinearLayout *>(group)) {
+		linear->SetSpacing(8.0f);
+	}
 	for (int i = 0; i < group->GetNumSubviews(); ++i) {
 		UI::View *child = group->GetViewByIndex(i);
-		if (auto *choice = dynamic_cast<UI::Choice *>(child)) {
-			choice->ReplaceLayoutParams(new UI::LinearLayoutParams(UI::FILL_PARENT, 50));
-			choice->SetRoundCorners();
+		if (auto *item = dynamic_cast<UI::ClickableItem *>(child)) {
+			item->ReplaceLayoutParams(new UI::LinearLayoutParams(UI::FILL_PARENT, 58));
+			item->SetRoundCorners();
 		} else if (auto *children = dynamic_cast<UI::ViewGroup *>(child)) {
 			CompactMenu(children);
 		}

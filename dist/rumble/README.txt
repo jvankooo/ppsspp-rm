@@ -33,11 +33,14 @@ Per-game settings are saved in sdmc:/switch/ppsspp-nx/PSP/RUMBLE/settings/.
 No rumble while the game is paused, in its menus, during movies, or in the HOME menu.
 Joy-Cons (handheld or detached) and the Pro Controller (player 1) rumble.
 
-HELPING TO TUNE IT
-------------------
-Settings > Controls > Rumble > "Rumble log (research)" writes a line for every rumble to
-sdmc:/switch/ppsspp-nx/PSP/RUMBLE/logs/. "Save RAM snapshot..." (or the "Rumble RAM snapshot"
-hotkey, mappable in the controls) saves the game's memory with a label to .../RUMBLE/snapshots/.
-Send the log (and snapshots of moments that should or shouldn't rumble) to tune the profile.
-
+MAKING PROFILES
+---------------
+Settings > Controls > Rumble > "Save RAM snapshot..." (or the "Rumble RAM snapshot" hotkey,
+mappable in the controls) saves the game's memory with a label to .../RUMBLE/snapshots/.
 The profile format and how to make one for another game: docs/rumble.md in the source.
+
+GRAPHICS BACKEND
+----------------
+The rendering backend is one setting for all games (it restarts PPSSPP), so the launcher's
+per-game settings don't list it. Change it in the launcher: + (Settings) > Graphics >
+"Rendering backend".

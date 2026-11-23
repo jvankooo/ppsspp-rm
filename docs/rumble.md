@@ -32,11 +32,8 @@ Settings > Controls > **Rumble**, or **Rumble** in the pause menu (shown for gam
 | Sound rumble sensitivity | `PSP/RUMBLE/settings/<ID>.ini` | Off, 1 to 10. Higher: smaller bursts count. The default comes from the profile (5 = the gowco-sw tuning). |
 | One switch per rule | `PSP/RUMBLE/settings/<ID>.ini` | For God of War: "Hits taken", "Blows landed". |
 | Test buttons | | A heavy hit, a sharp tap, an impact. |
-| Rumble log (research) | ppsspp.ini | A line per rumble in `PSP/RUMBLE/logs/<ID>_<date>.log`. |
 | Save RAM snapshot... | | Writes RAM and the profile's values to `PSP/RUMBLE/snapshots`, with a label you type. |
 | Reload rumble profile | | After editing the profile on the SD card. |
-
-The page also shows the profile's values live (`health = 87 @ 09E3CA44`), and how many rumbles have fired.
 
 If there is no profile for the running game but the NRO carries one (it does for God of War: Chains of
 Olympus), the page offers **Install the bundled rumble profile**, which copies it to the SD card.
@@ -144,10 +141,8 @@ Values are found on the running game, not from the ISO.
    the interpreter) to find the code that writes it, and read that code in Ghidra on the decrypted EBOOT
    to see which object it belongs to and how the game reaches it.
 4. Write the profile, then check it: `rumble_research.py PORT -c "profile UCUS98653.ini"` on the PC, or
-   `rumble_research.py evaldump UCUS98653.ini snapshot.bin` on a Switch snapshot, or the values on the
-   Rumble settings page while playing.
-5. Turn on the **Rumble log**, play, and tune `strength`, `gain`, `min` and `sound_sensitivity` from what it
-   shows.
+   `rumble_research.py evaldump UCUS98653.ini snapshot.bin` on a Switch snapshot.
+5. Play, and tune `strength`, `gain`, `min` and `sound_sensitivity` until it feels right.
 
 Keep game content (ISOs, decrypted EBOOTs, RAM dumps, screenshots) out of the repository.
 

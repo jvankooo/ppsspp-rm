@@ -182,8 +182,6 @@ static int g_frame = 0;
 static int g_settleFrames = 0;
 static struct { uint32_t addr, bytes; } g_musicBufs[8];
 static int g_musicNext = 0;
-static FILE *g_log = nullptr;
-static int g_logLinesSinceFlush = 0;
 
 // The sound detector (CPU thread).
 static struct {
@@ -591,23 +589,6 @@ static int SoundSensitivityLocked() {
 	return g_gameSettings.soundSensitivity >= 0 ? g_gameSettings.soundSensitivity : g_profile->soundSensitivity;
 }
 
-// --- Log ---
-
-static void LogLine(const char *fmt, ...) {
-	if (!g_log) {
-		return;
-	}
-	va_list args;
-	va_start(args, fmt);
-	vfprintf(g_log, fmt, args);
-	va_end(args);
-	fputc('\n', g_log);
-	if (++g_logLinesSinceFlush >= 16) {
-		fflush(g_log);
-		g_logLinesSinceFlush = 0;
-	}
-}
-
 static std::string TimeStamp() {
 	time_t t = time(nullptr);
 	struct tm tm {};
@@ -619,29 +600,6 @@ static std::string TimeStamp() {
 	char buf[32];
 	strftime(buf, sizeof(buf), "%Y%m%d-%H%M%S", &tm);
 	return buf;
-}
-
-static void CloseLog() {
-	if (g_log) {
-		fclose(g_log);
-		g_log = nullptr;
-	}
-}
-
-static void OpenLog() {
-	CloseLog();
-	if (!g_Config.bRumbleLog || !g_profile) {
-		return;
-	}
-	Path dir = RumbleDir() / "logs";
-	File::CreateFullPath(dir);
-	Path path = dir / (g_profile->discID + "_" + TimeStamp() + ".log");
-	g_log = File::OpenCFile(path, "w");
-	if (g_log) {
-		LogLine("# PPSSPP rumble log: %s (%s), profile %s", g_profile->name.c_str(), g_profile->discID.c_str(), g_profile->path.c_str());
-		LogLine("# frame  seconds  source  details");
-		INFO_LOG(Log::System, "Rumble log: %s", path.c_str());
-	}
 }
 
 // --- Memory ---
@@ -731,7 +689,6 @@ static void CheckGame() {
 			return;
 		}
 	}
-	CloseLog();
 	std::unique_ptr<Profile> profile;
 	Path path = RumbleDir() / (discID + ".ini");
 	if (!discID.empty() && File::Exists(path)) {
@@ -755,11 +712,9 @@ static void CheckGame() {
 	if (g_profile) {
 		INFO_LOG(Log::System, "Rumble profile loaded: %s (%s), %d values, %d rules%s", g_profile->name.c_str(), path.c_str(),
 			(int)g_profile->values.size(), (int)g_profile->rules.size(), g_profile->errors.empty() ? "" : " (with errors)");
-		if (g_Config.bRumble) {
-			g_OSD.Show(g_profile->errors.empty() ? OSDType::MESSAGE_SUCCESS : OSDType::MESSAGE_WARNING,
-				"Rumble: " + g_profile->name, g_profile->errors, 3.0f, "rumble_profile");
+		if (g_Config.bRumble && !g_profile->errors.empty()) {
+			g_OSD.Show(OSDType::MESSAGE_WARNING, "Rumble: " + g_profile->name, g_profile->errors, 5.0f, "rumble_profile");
 		}
-		OpenLog();
 	} else if (!discID.empty()) {
 		INFO_LOG(Log::System, "No rumble profile for %s (%s)", discID.c_str(), path.c_str());
 	}
@@ -779,11 +734,9 @@ void ResetGameState() {
 	g_effects.clear();
 	g_soundQueue.clear();
 	g_settleFrames = 30;
-	LogLine("%6d %8.2f state    reset (savestate or game reset)", g_frame, g_frame / 60.0);
 }
 
 void OnShutdown() {
-	CloseLog();
 	std::lock_guard<std::mutex> guard(g_mutex);
 	g_profile.reset();
 	g_checked = false;
@@ -863,9 +816,6 @@ void OnVBlank() {
 		g_settleFrames--;
 		active = false;
 	}
-	if (active != g_active) {
-		LogLine("%6d %8.2f gate     %s", g_frame, g_frame / 60.0, active ? "active (in play)" : "inactive");
-	}
 	g_active = active;
 	if (!g_Config.bRumble) {
 		std::fill(g_levels.begin(), g_levels.end(), 0.0f);
@@ -928,8 +878,6 @@ void OnVBlank() {
 		}
 		g_ruleLastFire[i] = now;
 		AddEffectLocked(strength, duration, r.feel);
-		LogLine("%6d %8.2f rule     %s: %s %.4g -> %.4g (change %.4g) strength %.2f %d ms", g_frame, g_frame / 60.0,
-			r.name.c_str(), p.values[r.value].name.c_str(), vs.prev, vs.v, m, strength, duration);
 	}
 }
 
@@ -1019,7 +967,6 @@ void FeedAudio(const int32_t *mono, int frames, int sampleRateHz) {
 			if (g_soundQueue.size() < 256) {
 				g_soundQueue.push_back(SoundEvent{ posUs, level });
 			}
-			LogLine("%6d %8.2f sound    level %.2f (low %.3f, average %.3f, all %.3f)", g_frame, g_frame / 60.0, level, lo, g_det.avgLo, all);
 		}
 	}
 }
@@ -1222,10 +1169,6 @@ std::string SaveSnapshot(const std::string &label) {
 	}
 	auto data = std::make_shared<std::vector<uint8_t>>(Memory::GetPointerUnchecked(start), Memory::GetPointerUnchecked(start) + size);
 	std::string info = StringFromFormat("label: %s\ndisc: %s\nframe: %d\nram: %08X-%08X\n", label.c_str(), discID.c_str(), g_frame, start, start + size) + values;
-	LogLine("%6d %8.2f snapshot %s", g_frame, g_frame / 60.0, base.c_str());
-	if (g_log) {
-		fflush(g_log);
-	}
 	// Writing 32 MB to an SD card takes a moment: not on the emulator's thread.
 	std::thread([data, info, bin, txt]() {
 		File::WriteDataToFile(false, data->data(), data->size(), bin);

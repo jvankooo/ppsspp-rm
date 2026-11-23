@@ -816,7 +816,12 @@ void GamePauseScreen::CreateViews() {
 		layoutRoot->Add(middleColumn);
 #endif
 
-		ViewGroup *buttonColumnScroll = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(320, FILL_PARENT, actionMenuMargins));
+#if defined(PPSSPP_SWITCH_SDL_LAUNCHER)
+		const float buttonColumnWidth = 380.0f;
+#else
+		const float buttonColumnWidth = 320.0f;
+#endif
+		ViewGroup *buttonColumnScroll = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(buttonColumnWidth, FILL_PARENT, actionMenuMargins));
 		buttonColumn = new LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(WRAP_CONTENT, WRAP_CONTENT));
 		buttonColumnScroll->Add(buttonColumn);
 		layoutRoot->Add(buttonColumnScroll);
@@ -1010,6 +1015,7 @@ void GamePauseScreen::CreateViews() {
 	}
 #if defined(PPSSPP_SWITCH_SDL_LAUNCHER)
 	SwitchUI::CompactMenu(rightColumnItems);
+	rightColumnItems->SetSpacing(18.0f);
 	frame->Add(SwitchUI::Footer(true));
 #endif
 

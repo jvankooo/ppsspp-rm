@@ -568,7 +568,6 @@ public:
 	// Rumble inferred for PSP games (Core/Rumble): on/off, strength (Rumble::Strength), and the research log.
 	bool bRumble;
 	int iRumbleStrength;
-	bool bRumbleLog;
 
 	// We also use the XInput settings as analog settings on other platforms like Android.
 	float fAnalogDeadzone;
