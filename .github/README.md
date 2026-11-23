@@ -154,16 +154,18 @@ To make a profile for another game, see [`docs/rumble.md`](../docs/rumble.md): t
 
 This repository is a GitHub fork of `NaGaa95/ppsspp-nx`, with two branches:
 
-- **`master`** mirrors NaGaa95's `master`. Bring it up to date with the **Sync fork** button on GitHub (with `master` selected), or `gh repo sync jvankooo/ppsspp-rm -b master`.
-- **`switch-rumble`** (the default) is `master` plus the rumble work. To take NaGaa95's new commits into it, open a pull request from `master` into `switch-rumble` here; GitHub merges it in the browser when nothing conflicts. Otherwise, locally:
+- **`main`** (the default) is PPSSPP-rm: NaGaa95's work plus rumble.
+- **`master`** mirrors NaGaa95's `master`, untouched. Bring it up to date with the **Sync fork** button on GitHub (with `master` selected), or `gh repo sync jvankooo/ppsspp-rm -b master`.
 
-  ```
-  git remote add upstream https://github.com/NaGaa95/ppsspp-nx.git
-  git fetch upstream
-  git checkout switch-rumble
-  git merge upstream/master      # fix any conflicts, build, test on the Switch
-  git push origin switch-rumble
-  ```
+To take NaGaa95's new commits into `main`, open a pull request from `master` into `main` here; GitHub merges it in the browser when nothing conflicts. Otherwise, locally:
+
+```
+git remote add upstream https://github.com/NaGaa95/ppsspp-nx.git
+git fetch upstream
+git checkout main
+git merge upstream/master      # fix any conflicts, build, test on the Switch
+git push origin main
+```
 
 This README lives in `.github/README.md`, so the PPSSPP-nx README at the root is never changed here and never conflicts.
 
