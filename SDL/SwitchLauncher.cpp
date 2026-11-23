@@ -91,6 +91,7 @@
 #include "Core/Util/PSARUnpack.h"
 #include "Core/Util/GameManager.h"
 #include "Common/Net/HTTPClient.h"
+#include "Common/Net/SwitchCACerts.h"
 
 namespace SwitchLauncher {
 namespace {
@@ -631,6 +632,7 @@ static bool FetchUrl(const std::string &url, std::string *data, const std::atomi
 	curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 256L);
 	curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 15L);
 	curl_easy_setopt(curl, CURLOPT_USERAGENT, "PPSSPP-NX/SDL");
+	SwitchCurlUseSystemCAs(curl);
 	curl_easy_setopt(curl, CURLOPT_PROTOCOLS, (long)(CURLPROTO_HTTP | CURLPROTO_HTTPS));
 	curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS, (long)(CURLPROTO_HTTP | CURLPROTO_HTTPS));
 	curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);

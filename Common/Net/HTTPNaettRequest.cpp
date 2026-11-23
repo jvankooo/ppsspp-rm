@@ -10,6 +10,7 @@
 
 #include "Common/Log.h"
 #include "Common/Net/HTTPNaettRequest.h"
+#include "Common/Net/SwitchCACerts.h"
 #include "Common/Thread/ThreadUtil.h"
 
 namespace http {
@@ -90,6 +91,7 @@ void HTTPSRequest::Do() {
 	curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
 	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+	SwitchCurlUseSystemCAs(curl);
 	curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
 	curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error);
 	curl_easy_setopt(curl, CURLOPT_USERAGENT, userAgent_.empty() ? "PPSSPP" : userAgent_.c_str());

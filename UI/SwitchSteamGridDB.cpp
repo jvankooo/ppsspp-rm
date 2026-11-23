@@ -17,6 +17,7 @@
 #include <unordered_set>
 
 #include "Common/Data/Format/JSONReader.h"
+#include "Common/Net/SwitchCACerts.h"
 #include "Common/Render/ManagedTexture.h"
 
 #ifndef PPSSPP_SWITCH_RELEASE_VERSION
@@ -73,6 +74,7 @@ SteamGridDBResult Request(const std::string &url, const std::string &apiKey, con
 	curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
 	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+	SwitchCurlUseSystemCAs(curl);
 	curl_easy_setopt(curl, CURLOPT_MAXFILESIZE_LARGE, (curl_off_t)MAX_RESPONSE_SIZE);
 	curl_easy_setopt(curl, CURLOPT_USERAGENT, "PPSSPP-nx/" PPSSPP_SWITCH_RELEASE_VERSION);
 	curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);

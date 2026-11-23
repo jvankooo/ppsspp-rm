@@ -30,6 +30,7 @@
 #include "Common/Log.h"
 #include "Common/StringUtils.h"
 #include "Common/Thread/ThreadUtil.h"
+#include "Common/Net/SwitchCACerts.h"
 #include "UI/SwitchUpdate.h"
 
 #ifndef PPSSPP_SWITCH_RELEASE_VERSION
@@ -104,6 +105,7 @@ void SetCommonCurlOptions(CURL *curl, std::pair<std::atomic<bool> *, std::atomic
 	curl_easy_setopt(curl, CURLOPT_USERAGENT, "PPSSPP-nx-Updater/" PPSSPP_SWITCH_RELEASE_VERSION);
 	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
 	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+	SwitchCurlUseSystemCAs(curl);
 	curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
 	curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, TransferProgress);
 	curl_easy_setopt(curl, CURLOPT_XFERINFODATA, progress);
