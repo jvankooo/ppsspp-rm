@@ -951,6 +951,17 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
 			System_ExitApp();
 		}
 	}
+	// A game's own config can choose the graphics backend. The graphics context is created after this
+	// returns, so it's applied now, for this run only (leaving the game restarts into the launcher).
+	if (!boot_filename.empty() && !cmdLineOptions.gpuBackend.has_value()) {
+		const std::string gameId = g_GameManager.GetGameID(boot_filename);
+		const int backend = g_Config.GameConfigGPUBackend(gameId);
+		if (backend >= 0 && backend != g_Config.iGPUBackend && g_Config.IsBackendEnabled((GPUBackend)backend)) {
+			INFO_LOG(Log::System, "%s uses its own graphics backend: %s", gameId.c_str(), GPUBackendToString((GPUBackend)backend).c_str());
+			g_Config.iGPUBackend = backend;
+			g_Config.DoNotSaveSetting(&g_Config.iGPUBackend);
+		}
+	}
 #endif
 
 	g_screenManager = new ScreenManager();

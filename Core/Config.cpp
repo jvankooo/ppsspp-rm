@@ -836,6 +836,14 @@ struct ConfigTranslator {
 
 typedef ConfigTranslator<GPUBackend, GPUBackendToString, GPUBackendFromString> GPUBackendTranslator;
 
+// The Switch launcher picks the game before the graphics context exists, so the backend can be per-game
+// there (applied in NativeInit). Elsewhere it's running already when a game's config loads.
+#if PPSSPP_PLATFORM(SWITCH)
+static constexpr CfgFlag SWITCH_PER_GAME_BACKEND = CfgFlag::PER_GAME;
+#else
+static constexpr CfgFlag SWITCH_PER_GAME_BACKEND = CfgFlag::DEFAULT;
+#endif
+
 static std::string DefaultInfrastructureUsername() {
 	// If the user has already picked a Nickname that satisfies the rules and is not "PPSSPP",
 	// let's use that.
@@ -975,7 +983,7 @@ static constexpr const char *androidFramerateModeNames[] = { "Default", "Request
 
 static constexpr ConfigSetting graphicsSettings[] = {
 	ConfigSetting("iShowStatusFlags", SETTING(g_Config, iShowStatusFlags), 0, CfgFlag::PER_GAME),
-	ConfigSetting("GraphicsBackend", SETTING(g_Config, iGPUBackend), &DefaultGPUBackend, &GPUBackendTranslator::To, &GPUBackendTranslator::From, CfgFlag::DEFAULT | CfgFlag::REPORT)
+	ConfigSetting("GraphicsBackend", SETTING(g_Config, iGPUBackend), &DefaultGPUBackend, &GPUBackendTranslator::To, &GPUBackendTranslator::From, SWITCH_PER_GAME_BACKEND | CfgFlag::REPORT)
 		.Label(I18NCat::GRAPHICS, "Backend").Choices(gpuBackendNames),
 	ConfigSetting("ExternalDisplay", SETTING(g_Config, iExternalDisplay), (int)ExternalDisplayMode::SHOW_GAME, CfgFlag::DEFAULT)
 		.Label(I18NCat::GRAPHICS, "External display").Choices(externalDisplayNames),
@@ -2444,6 +2452,24 @@ bool Config::HasGameConfig(std::string_view gameId) {
 	bool exists = false;
 	Path fullIniFilePath = GetGameConfigFilePath(searchPath_, gameId, &exists);
 	return exists;
+}
+
+int Config::GameConfigGPUBackend(std::string_view gameId) {
+	if (gameId.empty()) {
+		return -1;
+	}
+	bool exists = false;
+	Path path = GetGameConfigFilePath(searchPath_, gameId, &exists);
+	IniFile iniFile;
+	if (!exists || !iniFile.Load(path)) {
+		return -1;
+	}
+	const Section *graphics = iniFile.GetSection("Graphics");
+	std::string value;
+	if (!graphics || !graphics->Get("GraphicsBackend", &value) || value.empty()) {
+		return -1;
+	}
+	return (int)GPUBackendTranslator::From(value);
 }
 
 bool Config::CreateGameConfig(std::string_view gameId) {

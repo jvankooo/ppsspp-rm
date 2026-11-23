@@ -13,10 +13,14 @@
 #include <curl/curl.h>
 
 #include <algorithm>
+#include <cctype>
 #include <limits>
 #include <unordered_set>
 
 #include "Common/Data/Format/JSONReader.h"
+#include "Common/File/FileUtil.h"
+#include "Common/File/Path.h"
+#include "Common/StringUtils.h"
 #include "Common/Net/SwitchCACerts.h"
 #include "Common/Render/ManagedTexture.h"
 
@@ -60,7 +64,7 @@ SteamGridDBResult Request(const std::string &url, const std::string &apiKey, con
 	DownloadBuffer buffer{{}, cancel};
 	curl_slist *headers = nullptr;
 	if (!apiKey.empty()) {
-		std::string authorization = "Authorization: Bearer " + apiKey;
+		std::string authorization = "Authorization: Bearer " + SteamGridDB_CleanKey(apiKey);
 		headers = curl_slist_append(headers, authorization.c_str());
 	}
 	curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
@@ -96,8 +100,11 @@ SteamGridDBResult Request(const std::string &url, const std::string &apiKey, con
 		return SteamGridDBResult::Cancelled;
 	if (curlResult != CURLE_OK)
 		return SteamGridDBResult::NetworkError;
-	if (responseCode == 401 || responseCode == 403)
+	// 401 with {"errors":["Invalid API key"]} for a wrong key. A 403 is the site refusing the client.
+	if (responseCode == 401)
 		return SteamGridDBResult::Unauthorized;
+	if (responseCode == 403)
+		return SteamGridDBResult::Forbidden;
 	if (responseCode == 404)
 		return SteamGridDBResult::NotFound;
 	if (responseCode < 200 || responseCode >= 300)
@@ -195,7 +202,7 @@ SteamGridDBResult SteamGridDB_GetIcons(const std::string &apiKey, int64_t gameId
 	for (const std::string &endpoint : endpoints) {
 		std::string response;
 		SteamGridDBResult result = Request(endpoint, apiKey, cancel, &response);
-		if (result == SteamGridDBResult::Cancelled || result == SteamGridDBResult::Unauthorized)
+		if (result == SteamGridDBResult::Cancelled || result == SteamGridDBResult::Unauthorized || result == SteamGridDBResult::Forbidden)
 			return result;
 		if (result == SteamGridDBResult::OK) {
 			AppendArtworks(response, artworks, &seen);
@@ -251,7 +258,9 @@ const char *SteamGridDB_ResultMessage(SteamGridDBResult result) {
 	case SteamGridDBResult::MissingKey:
 		return "A SteamGridDB API key is required.";
 	case SteamGridDBResult::Unauthorized:
-		return "SteamGridDB rejected the API key.";
+		return "SteamGridDB rejected the API key. Copy it again from steamgriddb.com > Preferences > API: it is 32 letters and digits.";
+	case SteamGridDBResult::Forbidden:
+		return "SteamGridDB refused the request (HTTP 403). Try again later.";
 	case SteamGridDBResult::NetworkError:
 		return "Could not connect to SteamGridDB.";
 	case SteamGridDBResult::NotFound:
@@ -262,6 +271,47 @@ const char *SteamGridDB_ResultMessage(SteamGridDBResult result) {
 		return "The SteamGridDB request was cancelled.";
 	}
 	return "SteamGridDB request failed.";
+}
+
+std::string SteamGridDB_CleanKey(std::string_view key) {
+	std::string clean;
+	for (char c : key) {
+		if (isalnum((unsigned char)c)) {
+			clean += c;
+		}
+	}
+	// Pasted with the header name.
+	if (clean.size() > 32 && clean.compare(0, 6, "Bearer") == 0) {
+		clean.erase(0, 6);
+	}
+	return clean;
+}
+
+std::string SteamGridDB_DescribeKey(const std::string &key) {
+	const std::string clean = SteamGridDB_CleanKey(key);
+	if (clean.empty()) {
+		return "Not set";
+	}
+	if (clean.size() < 8) {
+		return StringFromFormat("%d characters (should be 32)", (int)clean.size());
+	}
+	return clean.substr(0, 4) + "..." + clean.substr(clean.size() - 4) +
+		(clean.size() == 32 ? std::string() : StringFromFormat(", %d characters (should be 32)", (int)clean.size()));
+}
+
+bool SteamGridDB_ImportKeyFile(std::string *key) {
+	const Path file("/switch/ppsspp-nx/steamgriddb_key.txt");
+	std::string text;
+	if (!File::Exists(file) || !File::ReadTextFileToString(file, &text)) {
+		return false;
+	}
+	const std::string clean = SteamGridDB_CleanKey(text);
+	if (clean.empty()) {
+		return false;
+	}
+	*key = clean;
+	File::Rename(file, Path("/switch/ppsspp-nx/steamgriddb_key.txt.imported"));
+	return true;
 }
 
 #endif

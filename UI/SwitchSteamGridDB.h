@@ -9,12 +9,14 @@
 #include <atomic>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 enum class SteamGridDBResult {
 	OK,
 	MissingKey,
 	Unauthorized,
+	Forbidden,
 	NetworkError,
 	NotFound,
 	InvalidResponse,
@@ -41,3 +43,11 @@ SteamGridDBResult SteamGridDB_GetArtwork(const std::string &apiKey, int64_t game
 	std::vector<SteamGridDBArtwork> *artworks, const std::atomic<bool> *cancel);
 SteamGridDBResult SteamGridDB_DownloadImage(const std::string &url, std::vector<uint8_t> *data, const std::atomic<bool> *cancel);
 const char *SteamGridDB_ResultMessage(SteamGridDBResult result);
+
+// API keys are 32 letters and digits. Drops what pasting tends to add: spaces, line breaks, quotes, "Bearer".
+std::string SteamGridDB_CleanKey(std::string_view key);
+// "Not set", or the key's start and end and its length, to compare with the one on steamgriddb.com.
+std::string SteamGridDB_DescribeKey(const std::string &key);
+// Typing a key on the Switch keyboard is error-prone: a key saved on the SD card, in
+// /switch/ppsspp-nx/steamgriddb_key.txt, is taken from there instead, and the file renamed to .imported.
+bool SteamGridDB_ImportKeyFile(std::string *key);

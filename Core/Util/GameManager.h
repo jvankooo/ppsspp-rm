@@ -98,6 +98,8 @@ public:
 	// Extracts a PS1 disc's files (ZipFileInfo::discFiles), into a folder of their own if there's more
 	// than one. Exposed for testing.
 	bool InstallZippedPS1Disc(struct zip *z, const std::vector<std::string> &files, const Path &destDir);
+	// The disc ID of an ISO, CSO or PBP (empty if it isn't one).
+	std::string GetGameID(const Path &path) const;
 
 private:
 	void InstallZipContents(ZipFileTask task);
@@ -116,7 +118,6 @@ private:
 	bool InstallInProgress() const { return installThread_.joinable(); }
 
 	Path GetTempFilename() const;
-	std::string GetGameID(const Path &path) const;
 	std::string GetPBPGameID(FileLoader *loader) const;
 	std::string GetISOGameID(FileLoader *loader) const;
 	std::shared_ptr<http::Request> curDownload_;

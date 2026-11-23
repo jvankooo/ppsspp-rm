@@ -41,6 +41,14 @@ The profile format and how to make one for another game: docs/rumble.md in the s
 
 GRAPHICS BACKEND
 ----------------
-The rendering backend is one setting for all games (it restarts PPSSPP), so the launcher's
-per-game settings don't list it. Change it in the launcher: + (Settings) > Graphics >
-"Rendering backend".
+The rendering backend can now be set per game: in the launcher, Y (Game menu) > Game settings >
+Graphics > "Rendering backend". It's used the next time that game starts. Games without their own
+setting use the one in + (Settings) > Graphics.
+
+STEAMGRIDDB COVERS
+------------------
+Needs your API key from steamgriddb.com > Preferences > API (32 letters and digits).
+Typing it on the Switch is easy to get wrong: you can instead save it in a text file at
+sdmc:/switch/ppsspp-nx/steamgriddb_key.txt. It's read the next time covers are downloaded
+(or when you open the key setting), and the file is renamed to steamgriddb_key.txt.imported.
+The key setting shows the key's first and last 4 characters, to compare with the website.

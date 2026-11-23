@@ -824,6 +824,9 @@ public:
 	void UnloadGameConfig();
 
 	bool HasGameConfig(std::string_view gameId);
+	// The graphics backend a game's own config asks for, or -1 if it has none. The backend has to be
+	// chosen before the game (and its config) loads, so it's read on its own.
+	int GameConfigGPUBackend(std::string_view gameId);
 	bool IsGameSpecific() const { return !gameId_.empty(); }
 	// False if the last Load() couldn't read the ini (missing, or the memory stick isn't reachable) and fell back to defaults.
 	bool LoadedFromFile() const { return loadedFromFile_; }

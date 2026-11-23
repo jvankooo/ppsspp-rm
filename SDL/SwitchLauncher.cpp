@@ -399,6 +399,8 @@ private:
 	bool Ask(UiText title, UiText message);
 	int Choose(UiText title, const std::vector<std::string> &choices, int initial = 0);
 	bool Prompt(UiText title, std::string *value, bool password = false);
+	bool EnsureSteamGridDBKey();
+	void EditSteamGridDBKey();
 	std::string Browse(Path directory, bool folder, bool images = false, bool manage = false);
 	void FileManager(Path directory = Path());
 	void FileActions(const Path &path);
@@ -3119,6 +3121,26 @@ bool Launcher::Prompt(UiText rawtitle, std::string *value, bool password) {
 	return true;
 }
 
+// The key from /switch/ppsspp-nx/steamgriddb_key.txt if there is one, else the saved one, else typed now.
+bool Launcher::EnsureSteamGridDBKey() {
+	SteamGridDB_ImportKeyFile(&g_Config.sSteamGridDBAPIKey);
+	if (g_Config.sSteamGridDBAPIKey.empty() && !Prompt("SteamGridDB API key", &g_Config.sSteamGridDBAPIKey)) {
+		return false;
+	}
+	g_Config.sSteamGridDBAPIKey = SteamGridDB_CleanKey(g_Config.sSteamGridDBAPIKey);
+	return !g_Config.sSteamGridDBAPIKey.empty();
+}
+
+void Launcher::EditSteamGridDBKey() {
+	if (SteamGridDB_ImportKeyFile(&g_Config.sSteamGridDBAPIKey)) {
+		Message("SteamGridDB API key", "Imported from /switch/ppsspp-nx/steamgriddb_key.txt: " + SteamGridDB_DescribeKey(g_Config.sSteamGridDBAPIKey));
+		return;
+	}
+	// Shown while typing, to catch mistakes: a 32-character key is easy to get wrong.
+	Prompt("SteamGridDB API key", &g_Config.sSteamGridDBAPIKey);
+	g_Config.sSteamGridDBAPIKey = SteamGridDB_CleanKey(g_Config.sSteamGridDBAPIKey);
+}
+
 bool Launcher::Ask(UiText rawtitle, UiText rawmessage) {
 	const std::string title((std::string_view)rawtitle), message((std::string_view)rawmessage);
 	constexpr int width = WIDTH * 3 / 4, buttonWidth = 210, buttonHeight = 56;
@@ -3860,16 +3882,11 @@ void Launcher::FrameGeneration(Entry *entry) {
 		rows.back().valueColor = SdlColor(SwitchUI::StatusColor(installed));
 		return rows;
 	});
-	const bool enabled = g_Config.bSwitchFrameGeneration;
 	SaveGameSettings("FrameGeneration");
 	UpdateConfigBadge(entry);
 	if (owns) {
+		// The game's config carries the backend LSFG needs (set above), and NativeInit applies it at launch.
 		g_Config.UnloadGameConfig();
-		if (enabled && g_Config.iGPUBackend != (int)GPUBackend::DEKO3D) {
-			// The graphics backend is global even when LSFG quality is per-game.
-			g_Config.iGPUBackend = (int)GPUBackend::VULKAN;
-			g_Config.Save("FrameGenerationBackend");
-		}
 	}
 }
 
@@ -3887,8 +3904,7 @@ void Launcher::Appearance() {
 				 {"Check updates at boot", updateAtBoot_ ? "On" : "Off", [&](int) { updateAtBoot_ = !updateAtBoot_; }},
 				 {"Grid columns", StringFromInt(columns_), [&](int d) { columns_ = std::clamp(columns_ + (d ? d : 1), 3, 8); }},
 				 {"Grid rows", StringFromInt(rows_), [&](int d) { rows_ = std::clamp(rows_ + (d ? d : 1), 1, 3); }},
-				 {"SteamGridDB API key", g_Config.sSteamGridDBAPIKey.empty() ? "Not set" : "Configured",
-				  [&](int) { Prompt("SteamGridDB API key", &g_Config.sSteamGridDBAPIKey, true); }},
+				 {"SteamGridDB API key", SteamGridDB_DescribeKey(g_Config.sSteamGridDBAPIKey), [&](int) { EditSteamGridDBKey(); }},
 			 };
 		 },
 		 -1, {nullptr, -1, {}, {}, "PPSSPP", {}, true});
@@ -4708,7 +4724,7 @@ int Launcher::ArtworkPicker(const std::vector<SteamGridDBArtwork> &artwork, bool
 }
 
 void Launcher::DownloadArtwork(Entry &entry, bool background) {
-	if (g_Config.sSteamGridDBAPIKey.empty() && !Prompt("SteamGridDB API key", &g_Config.sSteamGridDBAPIKey, true)) {
+	if (!EnsureSteamGridDBKey()) {
 		return;
 	}
 	std::string query = entry.title;
@@ -5209,7 +5225,7 @@ void Launcher::EditShare(SwitchStorage::SmbShare share) {
 }
 
 void Launcher::BatchCovers() {
-	if (g_Config.sSteamGridDBAPIKey.empty() && !Prompt("SteamGridDB API key", &g_Config.sSteamGridDBAPIKey, true)) {
+	if (!EnsureSteamGridDBKey()) {
 		return;
 	}
 	if (!Ask("Download missing covers?", "Search SteamGridDB for every game without a custom cover")) {
