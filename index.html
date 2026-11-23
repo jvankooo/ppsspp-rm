@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PPSSPP-rm HD Rumble</title>
+<meta name="description" content="How PPSSPP-rm turns PSP games' sound and game state into Nintendo Switch HD Rumble, with live demos.">
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --ink: #16181d; --muted: #5b6270; --line: #dde1e7;
+  --accent: #e4002b; --low: #2563eb; --high: #d97706; --ok: #15803d; --shade: rgba(22,24,29,.06);
+  --code: #eef0f3;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1115; --panel: #171a20; --ink: #e8eaee; --muted: #9aa2b1; --line: #2a2f38;
+    --accent: #ff4d6a; --low: #60a5fa; --high: #fbbf24; --ok: #4ade80; --shade: rgba(255,255,255,.05);
+    --code: #20242c;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1115; --panel: #171a20; --ink: #e8eaee; --muted: #9aa2b1; --line: #2a2f38;
+  --accent: #ff4d6a; --low: #60a5fa; --high: #fbbf24; --ok: #4ade80; --shade: rgba(255,255,255,.05);
+  --code: #20242c;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 980px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: clamp(1.7rem, 4vw, 2.4rem); line-height: 1.15; margin: 0 0 8px; letter-spacing: -.01em; }
+h2 { font-size: 1.3rem; margin: 0 0 4px; }
+p { margin: 0 0 12px; }
+.lead { color: var(--muted); font-size: 1.06rem; max-width: 70ch; }
+a { color: var(--accent); }
+code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: .9em; }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 20px; margin-top: 20px; }
+.step { color: var(--accent); font-weight: 700; font-size: .8rem; letter-spacing: .08em; text-transform: uppercase; }
+.sub { color: var(--muted); margin-bottom: 14px; max-width: 75ch; }
+canvas { width: 100%; display: block; border-radius: 10px; background: var(--shade); touch-action: pan-y; }
+.controls { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; margin: 14px 0 6px; }
+label { display: inline-flex; gap: 8px; align-items: center; font-size: .95rem; }
+input[type=range] { width: 180px; accent-color: var(--accent); }
+select, button { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: .85rem; color: var(--muted); margin-top: 8px; }
+.sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 5px; }
+.stats { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+.stat { background: var(--shade); border-radius: 10px; padding: 8px 12px; min-width: 120px; }
+.stat b { display: block; font-size: 1.2rem; }
+.stat span { color: var(--muted); font-size: .82rem; }
+.feelrow { display: flex; flex-wrap: wrap; gap: 8px; }
+.grid2 { display: grid; grid-template-columns: 1fr 200px; gap: 18px; align-items: center; }
+.pad { position: relative; height: 160px; display: grid; place-items: center; }
+.joy { width: 150px; height: 96px; position: relative; will-change: transform; }
+.joy .l, .joy .r { position: absolute; top: 0; width: 44px; height: 96px; border-radius: 22px; }
+.joy .l { left: 0; background: #00b8e6; } .joy .r { right: 0; background: #ff4b4b; }
+.joy .m { position: absolute; left: 40px; right: 40px; top: 4px; bottom: 4px; background: #2b2f36; border-radius: 6px; }
+.meter { height: 8px; background: var(--shade); border-radius: 4px; overflow: hidden; margin: 4px 0 8px; }
+.meter i { display: block; height: 100%; width: 0; }
+.fight { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.bar { height: 16px; background: var(--shade); border-radius: 8px; overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--ok); transition: width .15s; }
+.btns { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.log { font: .85rem/1.5 ui-monospace, Consolas, monospace; color: var(--muted); height: 150px; overflow: auto; background: var(--shade); border-radius: 10px; padding: 8px 10px; }
+.log div:first-child { color: var(--ink); }
+table { border-collapse: collapse; width: 100%; font-size: .92rem; }
+th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; }
+.flow { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; align-items: stretch; font-size: .88rem; }
+.flow div { background: var(--shade); border-radius: 10px; padding: 10px; }
+.flow b { display: block; margin-bottom: 2px; }
+footer { color: var(--muted); font-size: .88rem; margin-top: 28px; }
+@media (max-width: 720px) {
+  .grid2, .fight { grid-template-columns: 1fr; }
+  .flow { grid-template-columns: 1fr; }
+  input[type=range] { width: 140px; }
+}
+@media (prefers-reduced-motion: reduce) { .joy { transform: none !important; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>HD Rumble for PSP games</h1>
+  <p class="lead">The PSP never had a vibration motor, so no PSP game asks for rumble. <a href="https://github.com/jvankooo/ppsspp-rm">PPSSPP-rm</a>, a fork of NaGaa95's PPSSPP-nx for the Nintendo Switch, works out where rumble belongs from two things: the game's <b>sound</b> and the game's <b>state</b> in memory. The demos below run the same formulas as the emulator.</p>
+
+  <section>
+    <div class="flow" aria-label="How rumble is made">
+      <div><b>PSP game</b>sound effects, music, memory</div>
+      <div><b>Impact detector</b>low end below 150 Hz, compared with its recent average</div>
+      <div><b>Profile rules</b>health dropped, combo rose</div>
+      <div><b>Effect mixer</b>feel, strength, fade; strongest per band</div>
+      <div><b>HD Rumble</b>2 bands &times; (Hz, amplitude), 200&times; a second</div>
+    </div>
+  </section>
+
+  <section id="sound">
+    <div class="step">Source 1 &middot; Sound</div>
+    <h2>Which sounds become rumble</h2>
+    <p class="sub">Twelve seconds of a game's low end (everything below ~150 Hz), in 10 ms blocks. A block triggers a <b>thump</b> when it rises well above its own average of the last ~200 ms, so a steady drone stops counting once the average catches up. Move the sensitivity and watch the trigger line.</p>
+    <canvas id="sc" height="260" aria-label="Sound detector chart"></canvas>
+    <div class="controls">
+      <label>Sensitivity <input type="range" id="sens" min="0" max="10" value="5"> <b id="sensv">5</b></label>
+      <label><input type="checkbox" id="music"> Count the music too (the emulator doesn't)</label>
+    </div>
+    <div class="legend">
+      <span><i class="sw" style="background:var(--low)"></i>low-end level</span>
+      <span><i class="sw" style="background:var(--muted)"></i>trigger line (ratio &times; average + floor)</span>
+      <span><i class="sw" style="background:var(--accent)"></i>thump, height = strength</span>
+    </div>
+    <div class="stats">
+      <div class="stat"><b id="sn">0</b><span>thumps</span></div>
+      <div class="stat"><b id="sr">2.5&times;</b><span>must beat the average by</span></div>
+      <div class="stat"><b id="sf">0.040</b><span>and be above it by</span></div>
+    </div>
+  </section>
+
+  <section id="feels">
+    <div class="step">The output &middot; HD Rumble</div>
+    <h2>What each kind of rumble feels like</h2>
+    <p class="sub">An HD Rumble motor plays two bands at once, each with its own frequency and amplitude. Every effect has a <i>feel</i> that picks both bands and how it fades. The chart shows the amplitude sent to the Joy-Cons after the strength setting.</p>
+    <div class="feelrow" id="feelbtns"></div>
+    <div class="grid2" style="margin-top:14px">
+      <canvas id="fc" height="220" aria-label="Feel envelope chart"></canvas>
+      <div>
+        <div class="pad"><div class="joy" id="joy"><div class="l"></div><div class="m"></div><div class="r"></div></div></div>
+        <div style="font-size:.85rem">Low band <span id="flo"></span><div class="meter"><i id="mlo" style="background:var(--low)"></i></div>
+        High band <span id="fhi"></span><div class="meter"><i id="mhi" style="background:var(--high)"></i></div></div>
+      </div>
+    </div>
+    <div class="controls">
+      <label>Strength <select class="strength"></select></label>
+      <button id="play">Play it</button>
+      <span id="fdesc" style="color:var(--muted);font-size:.92rem"></span>
+    </div>
+  </section>
+
+  <section id="fight">
+    <div class="step">Source 2 &middot; Game state</div>
+    <h2>A God of War fight</h2>
+    <p class="sub">The God of War: Chains of Olympus profile reads Kratos's health and the combo counter from memory every frame. A drop in health is a <b>heavy</b> rumble, harder for a bigger part of the bar; each blow that lands is a <b>sharp</b> tap. Nothing while paused or dead.</p>
+    <div class="fight">
+      <div>
+        <div style="display:flex;justify-content:space-between;font-size:.9rem"><span>Kratos</span><span id="hp">100 / 100</span></div>
+        <div class="bar"><i id="hpbar" style="width:100%"></i></div>
+        <div style="margin-top:8px;font-size:.9rem">Combo: <b id="combo">0</b> HITS</div>
+        <div class="btns">
+          <button data-hit="3">Legionnaire hit (&minus;3)</button>
+          <button data-hit="12">Minotaur swing (&minus;12)</button>
+          <button data-hit="30">Basilisk bite (&minus;30)</button>
+          <button id="land">Land a blow</button>
+          <button id="combo3">3-hit combo</button>
+          <button id="pause">Pause</button>
+          <button id="heal">Health orbs (refill)</button>
+        </div>
+        <label>Strength <select class="strength"></select></label>
+      </div>
+      <div>
+        <canvas id="gc" height="170" aria-label="Rumble output over time"></canvas>
+        <div class="legend"><span><i class="sw" style="background:var(--low)"></i>low band</span><span><i class="sw" style="background:var(--high)"></i>high band</span><span>last 3 seconds</span></div>
+        <div class="log" id="log" aria-live="polite"><div>Hit something.</div></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="step">The numbers</div>
+    <h2>Rules, feels and strengths</h2>
+    <table>
+      <tr><th>Feel</th><th>Low band</th><th>High band</th><th>Shape</th><th>Used for</th></tr>
+      <tr><td>heavy</td><td>130 Hz &middot; 100%</td><td>260 Hz &middot; 55%</td><td>holds 30%, then fades</td><td>hits taken</td></tr>
+      <tr><td>sharp</td><td>180 Hz &middot; 45%</td><td>340 Hz &middot; 100%</td><td>straight fade</td><td>blows landed</td></tr>
+      <tr><td>thump</td><td>160 Hz &middot; 100%</td><td>320 Hz &middot; 60%</td><td>&times;0.6 every 10 ms</td><td>sound impacts</td></tr>
+      <tr><td>soft</td><td>140 Hz &middot; 80%</td><td>280 Hz &middot; 40%</td><td>holds half, then fades</td><td>gentle cues</td></tr>
+      <tr><td>engine</td><td>85 Hz &middot; 100%</td><td>190 Hz &middot; 30%</td><td>continuous</td><td>speed (racing)</td></tr>
+      <tr><td>buzz</td><td>220 Hz &middot; 50%</td><td>440 Hz &middot; 90%</td><td>continuous</td><td>rough ground</td></tr>
+    </table>
+    <p style="margin-top:14px">Strength scales everything: None 0%, Light 42%, Medium 64%, Strong 84% (default), Hard 100%. Anything that's on is lifted to at least 12% of that, since HD Rumble is barely felt below about a tenth. Overlapping effects don't add up: each band takes the strongest one.</p>
+    <p>Rumble only runs for a game with a profile in <code>sdmc:/switch/ppsspp-nx/PSP/RUMBLE/&lt;GAME ID&gt;.ini</code>. How to write one: <a href="https://github.com/jvankooo/ppsspp-rm/blob/switch-rumble/docs/rumble.md">docs/rumble.md</a>.</p>
+  </section>
+
+  <footer>PPSSPP by Henrik Rydgård and contributors &middot; Switch port by NaGaa95 &middot; GPL 2.0 or later &middot; <a href="https://github.com/jvankooo/ppsspp-rm">github.com/jvankooo/ppsspp-rm</a></footer>
+</main>
+
+<script>
+(function () {
+  'use strict';
+  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // --- Shared: the emulator's feels, strengths and mixer (Core/Rumble/Rumble.cpp) ---
+  const FEELS = {
+    heavy:  { lo: 130, hi: 260, wl: 1.00, wh: 0.55, ms: 380, test: 0.9, text: 'A hit taken: strong, holds for a moment, then fades.' },
+    sharp:  { lo: 180, hi: 340, wl: 0.45, wh: 1.00, ms: 70,  test: 0.5, text: 'A blow landed: a short, crisp tap in the high band.' },
+    thump:  { lo: 160, hi: 320, wl: 1.00, wh: 0.60, ms: 60,  test: 0.8, text: 'A sound impact: hits hard and dies in a few tens of ms.' },
+    soft:   { lo: 140, hi: 280, wl: 0.80, wh: 0.40, ms: 300, test: 0.6, text: 'A gentle cue.' },
+    engine: { lo: 85,  hi: 190, wl: 1.00, wh: 0.30, ms: 1000, test: 0.5, cont: true, text: 'Continuous, low: follows a value such as speed.' },
+    buzz:   { lo: 220, hi: 440, wl: 0.50, wh: 0.90, ms: 1000, test: 0.5, cont: true, text: 'Continuous, rattly: rough ground.' },
+  };
+  const STRENGTHS = [['None', 0], ['Light', 0.42], ['Medium', 0.64], ['Strong', 0.84], ['Hard', 1.0]];
+  let strength = 3;
+
+  function envelope(feel, t, dur) {
+    if (t < 0 || t >= dur) return 0;
+    const x = t / dur;
+    if (feel === 'thump') return Math.pow(0.6, t / 0.010);
+    if (feel === 'sharp') return 1 - x;
+    if (feel === 'heavy') return x < 0.3 ? 1 : Math.pow((1 - x) / 0.7, 1.5);
+    if (FEELS[feel].cont) return 1;
+    return x < 0.5 ? 1 : (1 - x) * 2;
+  }
+  const shape = a => a > 0.01 ? Math.min(STRENGTHS[strength][1] * (0.12 + 0.88 * a), 1) : 0;
+  function mix(effects, now) {
+    const amp = [0, 0], freq = [160, 320];
+    for (const e of effects) {
+      const a = e.strength * envelope(e.feel, now - e.start, e.dur);
+      const f = FEELS[e.feel];
+      if (a * f.wl > amp[0]) { amp[0] = a * f.wl; freq[0] = f.lo; }
+      if (a * f.wh > amp[1]) { amp[1] = a * f.wh; freq[1] = f.hi; }
+    }
+    return { lo: shape(amp[0]), hi: shape(amp[1]), flo: freq[0], fhi: freq[1] };
+  }
+
+  function setupCanvas(c) {
+    const r = window.devicePixelRatio || 1;
+    const w = c.clientWidth, h = Number(c.getAttribute('height'));
+    c.width = Math.round(w * r); c.height = Math.round(h * r);
+    c.style.height = h + 'px';
+    const g = c.getContext('2d');
+    g.setTransform(r, 0, 0, r, 0, 0);
+    return { g, w, h };
+  }
+
+  document.querySelectorAll('select.strength').forEach(s => {
+    STRENGTHS.forEach(([n], i) => s.add(new Option(n, i)));
+    s.value = strength;
+    s.addEventListener('change', () => {
+      strength = Number(s.value);
+      document.querySelectorAll('select.strength').forEach(o => { o.value = strength; });
+      drawFeel();
+    });
+  });
+
+  // --- 1. Sound detector ---
+  // Deterministic "game audio" low end: a quiet floor, impacts of several sizes, an engine drone, music bass.
+  const BLOCKS = 1200; // 12 s of 10 ms blocks
+  let seed = 7;
+  const rand = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+  const sfx = new Float32Array(BLOCKS), music = new Float32Array(BLOCKS);
+  const impacts = [[1.0, 0.05, 'footstep'], [2.0, 0.13, 'sword clash'], [3.2, 0.34, 'door slams'], [6.1, 0.3, 'hit during engine'],
+                   [8.4, 0.75, 'explosion'], [9.0, 0.09, 'debris'], [10.3, 0.22, 'chest bursts'], [11.2, 0.04, 'step']];
+  for (let i = 0; i < BLOCKS; i++) {
+    const t = i / 100;
+    let v = 0.012 + rand() * 0.01;
+    for (const [at, peak] of impacts) {
+      const d = t - at;
+      if (d >= 0) v += peak * (d < 0.02 ? d / 0.02 : Math.exp(-(d - 0.02) / 0.09));
+    }
+    if (t > 4.4 && t < 7.6) v += 0.13 * Math.min(1, (t - 4.4) / 0.6) * Math.min(1, (7.6 - t) / 0.3) * (0.92 + 0.08 * Math.sin(t * 40));
+    sfx[i] = v;
+    const beat = (t % 0.5);
+    music[i] = 0.11 * Math.exp(-beat / 0.08) * (t > 0.3 ? 1 : 0);
+  }
+
+  const sc = document.getElementById('sc');
+  function drawSound() {
+    const sens = Number(document.getElementById('sens').value);
+    const withMusic = document.getElementById('music').checked;
+    document.getElementById('sensv').textContent = sens === 0 ? 'off' : sens;
+    const f = Math.pow(2, (5 - sens) / 2.5);
+    const ratio = 1 + 1.5 * f, floor = 0.04 * f;
+    document.getElementById('sr').textContent = sens === 0 ? '-' : ratio.toFixed(2) + '×';
+    document.getElementById('sf').textContent = sens === 0 ? '-' : floor.toFixed(3);
+
+    const { g, w, h } = setupCanvas(sc);
+    g.clearRect(0, 0, w, h);
+    const top = 10, bot = h - 22, maxV = 0.8;
+    const X = i => i / BLOCKS * w, Y = v => bot - Math.sqrt(Math.min(v, maxV) / maxV) * (bot - top);
+    // axis seconds
+    g.fillStyle = css('--muted'); g.font = '11px system-ui';
+    for (let s = 0; s <= 12; s += 2) g.fillText(s + ' s', Math.min(X(s * 100) + 2, w - 24), h - 6);
+
+    let avg = 0, count = 0;
+    const lvl = new Float32Array(BLOCKS), thr = new Float32Array(BLOCKS), trig = new Float32Array(BLOCKS);
+    for (let i = 0; i < BLOCKS; i++) {
+      const lo = sfx[i] + (withMusic ? music[i] : 0);
+      lvl[i] = lo;
+      thr[i] = ratio * avg + floor + 0.1 / 6;
+      const thump = (lo - ratio * avg - floor) * 6;
+      const level = sens > 0 && thump >= 0.1 ? 0.4 + 0.6 * Math.min(thump, 1) : 0;
+      avg += (lo - avg) * 0.05;
+      trig[i] = level;
+    }
+    // A thump lasts 60 ms; neighbouring triggering blocks read as one hit.
+    let last = -100;
+    for (let i = 0; i < BLOCKS; i++) if (trig[i] > 0) { if (i - last > 6) count++; last = i; }
+
+    g.beginPath(); g.moveTo(0, bot);
+    for (let i = 0; i < BLOCKS; i++) g.lineTo(X(i), Y(lvl[i]));
+    g.lineTo(w, bot); g.closePath();
+    g.fillStyle = css('--low'); g.globalAlpha = 0.28; g.fill(); g.globalAlpha = 1;
+    g.beginPath();
+    for (let i = 0; i < BLOCKS; i++) i ? g.lineTo(X(i), Y(lvl[i])) : g.moveTo(0, Y(lvl[0]));
+    g.strokeStyle = css('--low'); g.lineWidth = 1.5; g.stroke();
+    if (sens > 0) {
+      g.beginPath();
+      for (let i = 0; i < BLOCKS; i++) i ? g.lineTo(X(i), Y(thr[i])) : g.moveTo(0, Y(thr[0]));
+      g.strokeStyle = css('--muted'); g.setLineDash([4, 3]); g.lineWidth = 1; g.stroke(); g.setLineDash([]);
+    }
+    g.fillStyle = css('--accent');
+    for (let i = 0; i < BLOCKS; i++) if (trig[i] > 0) g.fillRect(X(i) - 1, top, 2.2, (bot - top) * 0.22 * trig[i]);
+    g.fillStyle = css('--muted'); g.font = '11px system-ui';
+    impacts.forEach(([at, , name], k) => g.fillText(name, Math.min(X(at * 100) + 3, w - 70), top + (bot - top) * 0.3 + (k % 2) * 14));
+    g.fillText('engine drone', X(500), Y(0.15) - 6);
+
+    document.getElementById('sn').textContent = count;
+  }
+  document.getElementById('sens').addEventListener('input', drawSound);
+  document.getElementById('music').addEventListener('change', drawSound);
+
+  // --- 2. Feels ---
+  let feel = 'heavy';
+  const fb = document.getElementById('feelbtns');
+  Object.keys(FEELS).forEach(k => {
+    const b = document.createElement('button');
+    b.textContent = k; b.dataset.feel = k;
+    b.addEventListener('click', () => { feel = k; drawFeel(); playFeel(); });
+    fb.appendChild(b);
+  });
+  const fc = document.getElementById('fc');
+  function drawFeel(cursor) {
+    const f = FEELS[feel];
+    fb.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.feel === feel));
+    document.getElementById('fdesc').textContent = f.text + (f.cont ? '' : ' ' + f.ms + ' ms at the test strength.');
+    const { g, w, h } = setupCanvas(fc);
+    g.clearRect(0, 0, w, h);
+    const top = 12, bot = h - 22, dur = f.ms / 1000, span = Math.max(dur * 1.25, 0.12);
+    const X = t => t / span * w, Y = a => bot - a * (bot - top);
+    g.fillStyle = css('--muted'); g.font = '11px system-ui';
+    g.fillText('0 ms', 2, h - 6); g.fillText(Math.round(span * 1000) + ' ms', w - 44, h - 6);
+    g.strokeStyle = css('--line'); g.beginPath(); g.moveTo(0, Y(1)); g.lineTo(w, Y(1)); g.stroke();
+    g.fillText('100%', 2, Y(1) + 12);
+    const band = (w8, color, dash) => {
+      g.beginPath();
+      for (let i = 0; i <= 300; i++) {
+        const t = i / 300 * span;
+        const a = shape(f.test * envelope(feel, t, dur) * w8);
+        i ? g.lineTo(X(t), Y(a)) : g.moveTo(0, Y(a));
+      }
+      g.strokeStyle = color; g.lineWidth = 2.5; g.setLineDash(dash); g.stroke(); g.setLineDash([]);
+    };
+    band(f.wl, css('--low'), []);
+    band(f.wh, css('--high'), [6, 4]);
+    if (cursor !== undefined) { g.strokeStyle = css('--accent'); g.beginPath(); g.moveTo(X(cursor), top); g.lineTo(X(cursor), bot); g.stroke(); }
+    document.getElementById('flo').textContent = f.lo + ' Hz';
+    document.getElementById('fhi').textContent = f.hi + ' Hz';
+  }
+  let anim = 0;
+  const joy = document.getElementById('joy');
+  function playFeel() {
+    cancelAnimationFrame(anim);
+    const f = FEELS[feel], dur = f.ms / 1000;
+    // Slowed down 4x for the short ones, so a 60 ms thump can be seen.
+    const slow = dur < 0.2 ? 4 : 1;
+    const t0s = performance.now();
+    const stepSlow = () => {
+      const t = (performance.now() - t0s) / 1000 / slow;
+      const m = mix([{ start: 0, dur, strength: f.test, feel }], t);
+      document.getElementById('mlo').style.width = (m.lo * 100) + '%';
+      document.getElementById('mhi').style.width = (m.hi * 100) + '%';
+      if (!reduceMotion) {
+        const a = Math.max(m.lo, m.hi) * 5;
+        joy.style.transform = `translate(${(Math.random() - .5) * a}px, ${(Math.random() - .5) * a}px)`;
+      }
+      drawFeel(Math.min(t, Math.max(dur * 1.25, 0.12)));
+      if (t < dur + 0.05) anim = requestAnimationFrame(stepSlow);
+      else { joy.style.transform = ''; drawFeel(); }
+    };
+    anim = requestAnimationFrame(stepSlow);
+  }
+  document.getElementById('play').addEventListener('click', playFeel);
+
+  // --- 3. God of War fight (assets/rumble/UCUS98653.ini) ---
+  let health = 100, combo = 0, paused = false;
+  const MAX = 100;
+  const effects = [];
+  const logEl = document.getElementById('log');
+  function log(msg) {
+    const d = document.createElement('div'); d.textContent = msg;
+    logEl.prepend(d);
+    while (logEl.children.length > 40) logEl.lastChild.remove();
+  }
+  function hud() {
+    document.getElementById('hp').textContent = Math.max(0, Math.round(health)) + ' / ' + MAX;
+    document.getElementById('hpbar').style.width = Math.max(0, health) + '%';
+    document.getElementById('hpbar').style.background = health > 30 ? css('--ok') : css('--accent');
+    document.getElementById('combo').textContent = combo;
+    document.getElementById('pause').classList.toggle('on', paused);
+  }
+  const now = () => performance.now() / 1000;
+  const active = () => health > 0 && !paused;
+  function healthDrop(amount) {
+    // The game takes some hits in two steps on consecutive frames (a legionnaire's 3 is 1 then 2).
+    const steps = amount === 3 ? [1, 2] : [amount];
+    steps.forEach((s, k) => setTimeout(() => {
+      const before = health;
+      if (before <= 0) return;
+      health = Math.max(0, health - s);
+      const m = (before - health) / MAX;
+      if (paused) { log(`health ${before} -> ${health}: paused, no rumble`); hud(); return; }
+      if (health <= 0) { log(`health ${before} -> 0: Kratos died. active_when is false: no rumble`); hud(); return; }
+      if (m < 0.0005 || m > 1.0) { hud(); return; }
+      let st, dur;
+      if (m > 0.25) { st = 1.0; dur = 450; } else { st = Math.min(0.35 + 2.6 * m, 1.0); dur = 200; }
+      effects.push({ start: now(), dur: dur / 1000, strength: st, feel: 'heavy' });
+      log(`health ${before} -> ${health} (${(m * 100).toFixed(0)}% of the bar): heavy ${st.toFixed(2)} for ${dur} ms`);
+      hud();
+    }, k * 17));
+  }
+  function landBlow() {
+    combo++;
+    if (!active()) { log(`combo ${combo}: ${paused ? 'paused' : 'dead'}, no rumble`); hud(); return; }
+    const st = Math.min(0.25 + 0.15 * 1, 0.55);
+    effects.push({ start: now(), dur: 0.07, strength: st, feel: 'sharp' });
+    log(`combo ${combo - 1} -> ${combo}: sharp ${st.toFixed(2)} for 70 ms`);
+    hud();
+  }
+  document.querySelectorAll('[data-hit]').forEach(b => b.addEventListener('click', () => healthDrop(Number(b.dataset.hit))));
+  document.getElementById('land').addEventListener('click', landBlow);
+  document.getElementById('combo3').addEventListener('click', () => { landBlow(); setTimeout(landBlow, 180); setTimeout(landBlow, 360); });
+  document.getElementById('pause').addEventListener('click', () => { paused = !paused; log(paused ? 'paused: rules are off' : 'unpaused'); hud(); });
+  document.getElementById('heal').addEventListener('click', () => {
+    // A rise in health is ignored by a "drop" rule. The combo counter drops back to 0 after a fight.
+    health = MAX; combo = 0; log('health refilled (a rise: hit_taken ignores it), combo back to 0'); hud();
+  });
+
+  const gc = document.getElementById('gc');
+  const history = [];
+  let gctx = setupCanvas(gc);
+  function tick() {
+    const t = now();
+    for (let i = effects.length - 1; i >= 0; i--) if (t - effects[i].start >= effects[i].dur) effects.splice(i, 1);
+    const m = mix(effects, t);
+    history.push([t, m.lo, m.hi]);
+    while (history.length && t - history[0][0] > 3) history.shift();
+    const { g, w, h } = gctx;
+    g.clearRect(0, 0, w, h);
+    const top = 8, bot = h - 8;
+    const X = tt => w - (t - tt) / 3 * w, Y = a => bot - a * (bot - top);
+    const line = (idx, color) => {
+      g.beginPath();
+      history.forEach((p, i) => i ? g.lineTo(X(p[0]), Y(p[idx])) : g.moveTo(X(p[0]), Y(p[idx])));
+      g.strokeStyle = color; g.lineWidth = 2; g.stroke();
+    };
+    line(1, css('--low')); line(2, css('--high'));
+    requestAnimationFrame(tick);
+  }
+
+  let rt;
+  window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => { drawSound(); drawFeel(); gctx = setupCanvas(gc); }, 100); });
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { drawSound(); drawFeel(); hud(); });
+  drawSound(); drawFeel(); hud(); tick();
+})();
+</script>
+</body>
+</html>
