@@ -1,7 +1,7 @@
 PPSSPP for Nintendo Switch, with rumble
 =======================================
 
-Based on PPSSPP-nx 1.1.1 (NaGaa95). The PSP has no rumble, so this build infers it:
+Based on PPSSPP-nx 1.1.2 (NaGaa95). The PSP has no rumble, so this build infers it:
 from the game's sound (impacts, explosions), and, for games with a profile, from what
 happens in the game (God of War: Chains of Olympus: hits Kratos takes, blows he lands).
 
