@@ -144,6 +144,11 @@
 #define PPSSPP_API_D3D11 1
 #endif
 
+// The Switch port tests PPSSPP_PLATFORM(SWITCH) in plain expressions, which need it defined everywhere.
+#ifndef PPSSPP_PLATFORM_SWITCH
+#define PPSSPP_PLATFORM_SWITCH 0
+#endif
+
 // Not in the libretro cores, which get their graphics context from the frontend.
 #if (PPSSPP_PLATFORM(MAC) || PPSSPP_PLATFORM(IOS)) && !defined(__LIBRETRO__)
 #define PPSSPP_API_METAL 1

@@ -554,6 +554,7 @@
     <ClCompile Include="MIPS\x86\X64IRJit.cpp" />
     <ClCompile Include="Replay.cpp" />
     <ClCompile Include="Compatibility.cpp" />
+    <ClCompile Include="Rumble\Rumble.cpp" />
     <ClCompile Include="Config.cpp" />
     <ClCompile Include="Core.cpp" />
     <ClCompile Include="CoreTiming.cpp" />
@@ -907,6 +908,7 @@
     <ClInclude Include="MIPS\x86\X64IRJit.h" />
     <ClInclude Include="Replay.h" />
     <ClInclude Include="Compatibility.h" />
+    <ClInclude Include="Rumble\Rumble.h" />
     <ClInclude Include="Config.h" />
     <ClInclude Include="Core.h" />
     <ClInclude Include="CoreParameter.h" />

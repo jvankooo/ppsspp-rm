@@ -81,6 +81,7 @@ using namespace std::placeholders;
 #include "Core/Screenshot.h"
 #include "Core/HLE/__sceAudio.h"
 #include "Core/HW/Display.h"
+#include "Core/Rumble/Rumble.h"
 
 #include "UI/BackgroundAudio.h"
 #include "UI/GamepadEmu.h"
@@ -792,6 +793,14 @@ void EmuScreen::ProcessVKey(VirtKey virtKey, bool down) {
 	case VIRTKEY_SCREENSHOT:
 		if (down) {
 			TakeUserScreenshot();
+		}
+		break;
+
+	case VIRTKEY_RUMBLE_SNAPSHOT:
+		if (down) {
+			// Research for rumble profiles: RAM and the profile's values at this moment.
+			std::string file = Rumble::SaveSnapshot("hotkey");
+			g_OSD.Show(file.empty() ? OSDType::MESSAGE_ERROR : OSDType::MESSAGE_SUCCESS, file.empty() ? "Couldn't save the RAM snapshot" : "RAM snapshot saved", file, 2.0f, "rumble_snapshot");
 		}
 		break;
 

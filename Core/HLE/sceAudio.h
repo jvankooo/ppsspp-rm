@@ -53,6 +53,8 @@ struct AudioChannel {
 
 	// For the debugger only. Not saved.
 	bool mute = false;
+	// It has played sceAtrac/sceMp3 output: music, which the sound rumble leaves out. Not saved.
+	bool rumbleMusic = false;
 
 	// sampleAddress walks forward as the mixer consumes the buffer and drops back to zero when
 	// remainingSamples runs out. An output with a null pointer sets remainingSamples but leaves
@@ -87,6 +89,8 @@ struct AudioSRCChannel {
 
 	// For the debugger only. Not saved.
 	bool mute = false;
+	// As AudioChannel::rumbleMusic.
+	bool rumbleMusic = false;
 
 	AudioPendingBuffer buffers[2]{};
 	int bufferCount = 0;

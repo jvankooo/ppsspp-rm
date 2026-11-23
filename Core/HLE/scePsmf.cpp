@@ -33,6 +33,7 @@
 #include "Core/HLE/sceKernelMemory.h"
 #include "Core/HW/MediaEngine.h"
 #include "Core/CoreTiming.h"
+#include "Core/Rumble/Rumble.h"
 #include "GPU/GPUCommon.h"
 #include "GPU/GPUState.h"
 
@@ -1561,6 +1562,7 @@ static int scePsmfPlayerGetVideoData(u32 psmfPlayer, u32 videoDataAddr)
 	if (psmfplayer->status < PSMF_PLAYER_STATUS_PLAYING) {
 		return hleLogError(Log::ME, SCE_PSMFPLAYER_ERROR_INVALID_STATUS, "psmf not playing");
 	}
+	Rumble::NoteVideoFrame();
 	auto videoData = PSPPointer<PsmfVideoData>::Create(videoDataAddr);
 	if (!videoData.IsValid()) {
 		// Technically just crashes if videoData is not valid.

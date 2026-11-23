@@ -15,17 +15,26 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#include <deque>
 #include <string>
 
 #include "ppsspp_config.h"
 
 #include "Common/Data/Text/I18n.h"
+#include "Common/File/DirListing.h"
+#include "Common/File/FileUtil.h"
+#include "Common/File/VFS/VFS.h"
+#include "Common/StringUtils.h"
+#include "Common/System/OSD.h"
+#include "Common/System/Request.h"
+#include "Common/UI/PopupScreens.h"
 #include "Common/System/Display.h"
 #include "Common/System/System.h"
 #include "Common/UI/ScreenManager.h"
 #include "Common/UI/View.h"
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
+#include "Core/Rumble/Rumble.h"
 #include "UI/ControlMappingScreen.h"
 #include "UI/GameSettingsScreen.h"
 #include "UI/SettingsPage.h"
@@ -36,6 +45,184 @@
 #include "Core/ControlMapper.h"
 #include "SDL/SDLJoystick.h"
 #endif
+
+// --- Rumble (Core/Rumble) ---
+
+// Texts that only exist at runtime (rule labels, value names) are shown with SettingText::Raw, which keeps
+// a pointer: they live here, for as long as the app does. Pages may be built again at any time (search).
+static const char *KeepText(const std::string &text) {
+	static std::deque<std::string> texts;
+	for (const std::string &t : texts) {
+		if (t == text) {
+			return t.c_str();
+		}
+	}
+	texts.push_back(text);
+	return texts.back().c_str();
+}
+
+static Rumble::GameSettings g_rumbleGame;
+static int g_rumbleStrengthChoice = 0;  // 0: the global setting, 1 + Rumble::Strength.
+static int g_rumbleSensitivity = 5;
+
+static bool RumbleProfileLoaded() {
+	return Rumble::GetStatus().profileFound;
+}
+
+static void SaveRumbleGame() {
+	g_rumbleGame.strength = g_rumbleStrengthChoice - 1;
+	g_rumbleGame.soundSensitivity = g_rumbleSensitivity;
+	Rumble::SetGameSettings(g_rumbleGame);
+}
+
+static void BuildRumbleSettings(SettingsPage *page) {
+	using namespace UI;
+	SettingsPageHost *host = page->Host();
+	const Rumble::Status status = Rumble::GetStatus();
+	if (status.profileFound) {
+		g_rumbleGame = Rumble::GetGameSettings();
+		g_rumbleStrengthChoice = g_rumbleGame.strength + 1;
+		g_rumbleSensitivity = g_rumbleGame.soundSensitivity >= 0 ? g_rumbleGame.soundSensitivity : Rumble::ProfileSoundSensitivity();
+	}
+
+	page->Header("Rumble");
+	page->Description({ I18NCat::CONTROLS, "RumbleAbout", "The PSP has no rumble. PPSSPP infers it from the game's sound and, with a rumble profile for the game, from what happens in it (hits taken, blows landed). Rumble only runs for games that have a profile in PSP/RUMBLE." });
+	page->Setting(&g_Config.bRumble);
+	page->Setting(&g_Config.iRumbleStrength).Enabled(&g_Config.bRumble).Hint({ I18NCat::CONTROLS, "RumbleStrengthHint", "For all games, unless a game has its own" });
+	page->Choice("Test rumble").OnClick([](UI::EventParams &) {
+		Rumble::TestPulse(0);
+	}).Enabled(&g_Config.bRumble);
+	if (!Rumble::OutputAvailable()) {
+		page->Info("Rumble output", T(I18NCat::CONTROLS, "Not available on this device"));
+	}
+
+	if (!status.inGame) {
+		page->Header("This game");
+		page->Description({ I18NCat::CONTROLS, "RumbleNoGame", "Open these settings from the pause menu while a game runs to set the rumble for that game." });
+		page->Info("Rumble profiles folder", Rumble::RumbleDirectory());
+		std::vector<File::FileInfo> files;
+		File::GetFilesInDir(Path(Rumble::RumbleDirectory()), &files, "ini");
+		std::string ids;
+		for (const auto &f : files) {
+			ids += (ids.empty() ? "" : ", ") + f.name.substr(0, f.name.size() - 4);
+		}
+		page->Info("Installed profiles", ids.empty() ? std::string(T(I18NCat::CONTROLS, "None")) : ids);
+		return;
+	}
+
+	page->Header("This game");
+	page->Info("Game ID", status.discID);
+	if (!status.profileFound) {
+		page->Info("Rumble profile", T(I18NCat::CONTROLS, "Not found: rumble is off for this game"));
+		page->Info("Put the profile here", status.profilePath);
+		// The NRO carries the profiles made so far: copy one to the memory stick on request.
+		std::string bundled = "rumble/" + status.discID + ".ini";
+		size_t size = 0;
+		uint8_t *data = g_VFS.ReadFile(bundled, &size);
+		if (data) {
+			delete[] data;
+			std::string discID = status.discID;
+			page->Choice("Install the bundled rumble profile").OnClick([host, discID](UI::EventParams &) {
+				size_t size = 0;
+				uint8_t *data = g_VFS.ReadFile("rumble/" + discID + ".ini", &size);
+				if (!data) {
+					return;
+				}
+				Path dir(Rumble::RumbleDirectory());
+				File::CreateFullPath(dir);
+				bool ok = File::WriteDataToFile(true, data, size, dir / (discID + ".ini"));
+				delete[] data;
+				if (ok) {
+					Rumble::ReloadProfile();
+					g_OSD.Show(OSDType::MESSAGE_SUCCESS, T(I18NCat::CONTROLS, "Rumble profile installed. It loads when the game continues."), 4.0f);
+				} else {
+					g_OSD.Show(OSDType::MESSAGE_ERROR, T(I18NCat::CONTROLS, "Couldn't write the rumble profile"), 4.0f);
+				}
+			});
+		}
+	} else {
+		page->Info("Rumble profile", status.profileName);
+		if (!status.profileError.empty()) {
+			page->Info("Profile problems", status.profileError);
+		}
+	}
+
+	auto enabled = [] { return g_Config.bRumble && RumbleProfileLoaded(); };
+	const SettingText noProfile(I18NCat::CONTROLS, "RumbleNeedsProfile", "Needs a rumble profile for this game");
+
+	page->Custom("Rumble strength for this game", [host](UI::ViewGroup *parent) -> UI::View * {
+		static const char *names[] = { "Use the global setting", "None", "Light", "Medium", "Strong", "Hard" };
+		auto co = GetI18NCategory(I18NCat::CONTROLS);
+		PopupMultiChoice *choice = parent->Add(new PopupMultiChoice(&g_rumbleStrengthChoice, co->T("Rumble strength for this game"), names, 0, ARRAY_SIZE(names), I18NCat::CONTROLS, host->PageScreenManager()));
+		choice->OnChoice.Add([](UI::EventParams &) {
+			SaveRumbleGame();
+		});
+		return choice;
+	}).EnabledFunc(enabled).DisabledReason(noProfile);
+
+	page->IntSlider(&g_rumbleSensitivity, 0, 10, "Sound rumble sensitivity").Default(status.profileFound ? Rumble::ProfileSoundSensitivity() : 5)
+		.Setup([](UI::View *view) {
+			static_cast<PopupSliderChoice *>(view)->SetZeroLabel(T(I18NCat::CONTROLS, "Off"));
+		})
+		.OnChange([](UI::EventParams &) {
+			SaveRumbleGame();
+		})
+		.EnabledFunc([status] { return g_Config.bRumble && RumbleProfileLoaded() && status.hasSound; }).DisabledReason(noProfile)
+		.Hint({ I18NCat::CONTROLS, "RumbleSensitivityHint", "Rumble from loud, sudden low sounds (impacts, explosions). Higher: more of them" });
+
+	for (size_t i = 0; i < status.rules.size(); i++) {
+		const std::string name = status.rules[i].name;
+		page->Bool(SettingText::Raw(KeepText(status.rules[i].label)), [name]() {
+			for (const auto &r : g_rumbleGame.rules) {
+				if (r.first == name) {
+					return r.second;
+				}
+			}
+			return true;
+		}, [name](bool on) {
+			for (auto &r : g_rumbleGame.rules) {
+				if (r.first == name) {
+					r.second = on;
+				}
+			}
+			SaveRumbleGame();
+		}).EnabledFunc(enabled);
+	}
+	if (status.profileFound) {
+		page->Choice("Test: hit taken").OnClick([](UI::EventParams &) { Rumble::TestPulse(0); }).EnabledFunc(enabled);
+		page->Choice("Test: blow landed").OnClick([](UI::EventParams &) { Rumble::TestPulse(1); }).EnabledFunc(enabled);
+		page->Choice("Test: impact sound").OnClick([](UI::EventParams &) { Rumble::TestPulse(2); }).EnabledFunc(enabled);
+	}
+
+	page->Header("Rumble research");
+	page->Description({ I18NCat::CONTROLS, "RumbleResearchAbout", "For making and tuning profiles: a log of every rumble (PSP/RUMBLE/logs) and RAM snapshots (PSP/RUMBLE/snapshots) to compare on a PC. See docs/rumble.md." });
+	page->Setting(&g_Config.bRumbleLog).OnChange([](UI::EventParams &) {
+		// Opens or closes the log.
+		Rumble::ReloadProfile();
+	}).Hint({ I18NCat::CONTROLS, "RumbleLogHint", "Starts a new log file when the game continues" });
+	page->Choice("Save RAM snapshot...").OnClick([host](UI::EventParams &) {
+		System_InputBoxGetString(host->PageRequesterToken(), T(I18NCat::CONTROLS, "Snapshot label (what is happening now)"), "", false, [](std::string_view label, int) {
+			std::string file = Rumble::SaveSnapshot(std::string(label));
+			if (file.empty()) {
+				g_OSD.Show(OSDType::MESSAGE_ERROR, T(I18NCat::CONTROLS, "Couldn't save the snapshot"), 3.0f);
+			} else {
+				g_OSD.Show(OSDType::MESSAGE_SUCCESS, T(I18NCat::CONTROLS, "Snapshot saved"), file, 4.0f);
+			}
+		});
+	}).EnabledFunc([] { return Rumble::GetStatus().inGame; });
+	page->Choice("Reload rumble profile").OnClick([](UI::EventParams &) {
+		Rumble::ReloadProfile();
+		g_OSD.Show(OSDType::MESSAGE_INFO, T(I18NCat::CONTROLS, "The rumble profile reloads when the game continues"), 3.0f);
+	});
+	page->Info("Rumbles so far", StringFromFormat("%llu", (unsigned long long)status.rumblesFired));
+	for (const std::string &line : status.valueLines) {
+		size_t eq = line.find(" = ");
+		if (eq == std::string::npos) {
+			continue;
+		}
+		page->Info(SettingText::Raw(KeepText(line.substr(0, eq))), line.substr(eq + 3));
+	}
+}
 
 void BuildControlsSettings(SettingsPage *page) {
 	using namespace UI;
@@ -50,6 +237,7 @@ void BuildControlsSettings(SettingsPage *page) {
 	page->Choice("Calibrate analog stick").OpensScreen().OnClick([host](UI::EventParams &e) {
 		host->PageScreenManager()->push(new AnalogCalibrationScreen(host->PageGamePath()));
 	});
+	page->Link("Rumble", I18NCat::CONTROLS, &BuildRumbleSettings);
 
 #if (PPSSPP_PLATFORM(WINDOWS) && !PPSSPP_PLATFORM(UWP)) || (PPSSPP_PLATFORM(LINUX) && !PPSSPP_PLATFORM(ANDROID))
 	page->Setting(&g_Config.bSystemControls);

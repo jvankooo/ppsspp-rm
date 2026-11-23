@@ -45,6 +45,7 @@
 #include "Core/HLE/sceKernelInterrupt.h"
 #include "Core/HW/MeMMIO.h"
 #include "Core/MIPS/MeCore.h"
+#include "Core/Rumble/Rumble.h"
 #include "Core/Util/AudioFormat.h"
 
 // Should be used to lock anything related to the outAudioQueue.
@@ -67,6 +68,8 @@ static int audioHostIntervalCycles;
 
 static s32 *mixBuffer;
 static s16 *clampedMixBuffer;
+// Mono mix of everything but music, for the sound rumble (null while it's off).
+static s32 *rumbleMixBuffer;
 #ifndef MOBILE_DEVICE
 WaveFileWriter g_wave_writer;
 static bool m_logAudio;
@@ -117,6 +120,7 @@ void __AudioInit() {
 
 	mixBuffer = new s32[hwBlockSize * 2];
 	clampedMixBuffer = new s16[hwBlockSize * 2];
+	rumbleMixBuffer = new s32[hwBlockSize];
 	memset(mixBuffer, 0, hwBlockSize * 2 * sizeof(s32));
 
 	System_AudioClear();
@@ -213,6 +217,8 @@ void __AudioDoState(PointerWrap &p) {
 void __AudioShutdown() {
 	delete [] mixBuffer;
 	delete [] clampedMixBuffer;
+	delete [] rumbleMixBuffer;
+	rumbleMixBuffer = nullptr;
 
 	mixBuffer = 0;
 	for (u32 i = 0; i < PSP_AUDIO_CHANNEL_MAX; i++) {
@@ -237,6 +243,9 @@ void __AudioShutdown() {
 // the driver's 32-bit mix accumulator does, rather than clamping each channel separately.
 // 64-bit because the SRC channel accepts volumes up to 0xFFFFF, which overflows a 32-bit
 // product against a full-scale sample.
+// Whether this block also mixes rumbleMixBuffer.
+static bool g_rumbleMixing = false;
+
 static inline int ApplyChannelVolume(int sample, int vol) {
 	return (int)(((s64)sample * vol) >> 15);
 }
@@ -552,6 +561,19 @@ static bool __AudioMixChannel(AudioChannel &chan) {
 				mixBuffer[s * 2 + 1] += ApplyChannelVolume(src[s * 2 + 1], rightVol);
 			}
 		}
+		if (g_rumbleMixing) {
+			if (!chan.rumbleMusic && Rumble::IsMusicBuffer(chan.sampleAddress, count * stride)) {
+				chan.rumbleMusic = true;
+				INFO_LOG(Log::sceAudio, "Rumble: audio channel %d plays music", chan.index);
+			}
+			if (!chan.rumbleMusic) {
+				for (u32 s = 0; s < count; s++) {
+					const int l = mono ? src[s] : src[s * 2];
+					const int r = mono ? l : src[s * 2 + 1];
+					rumbleMixBuffer[s] += (ApplyChannelVolume(l, leftVol) + ApplyChannelVolume(r, rightVol)) >> 1;
+				}
+			}
+		}
 	}
 
 	chan.sampleAddress += count * stride;
@@ -579,6 +601,12 @@ static bool __AudioMixSRC(AudioSRCChannel &chan) {
 	const u32 stride = mono ? 2 : 4;
 	const int leftVol = chan.leftVolume;
 	const int rightVol = chan.rightVolume;
+
+	if (g_rumbleMixing && !chan.rumbleMusic && Rumble::IsMusicBuffer(chan.buffers[0].address, chan.buffers[0].samples * stride)) {
+		chan.rumbleMusic = true;
+		INFO_LOG(Log::sceAudio, "Rumble: the SRC channel plays music");
+	}
+	const bool rumbleMix = g_rumbleMixing && !chan.rumbleMusic;
 
 	bool woke = false;
 	for (int out = 0; out < hwBlockSize; out++) {
@@ -613,8 +641,13 @@ static bool __AudioMixSRC(AudioSRCChannel &chan) {
 			// 15 bits of fraction, not 16 - a full 16 would overflow the product against a
 			// full-scale difference.
 			const int frac = (int)(chan.frac >> 1);
-			mixBuffer[out * 2] += ApplyChannelVolume(l0 + (((l1 - l0) * frac) >> 15), leftVol);
-			mixBuffer[out * 2 + 1] += ApplyChannelVolume(r0 + (((r1 - r0) * frac) >> 15), rightVol);
+			const int left = ApplyChannelVolume(l0 + (((l1 - l0) * frac) >> 15), leftVol);
+			const int right = ApplyChannelVolume(r0 + (((r1 - r0) * frac) >> 15), rightVol);
+			mixBuffer[out * 2] += left;
+			mixBuffer[out * 2 + 1] += right;
+			if (rumbleMix) {
+				rumbleMixBuffer[out] += (left + right) >> 1;
+			}
 		}
 
 		chan.frac += ratio;
@@ -641,6 +674,10 @@ void __AudioUpdate(bool resetRecording) {
 	// to the CPU. Much better to throttle the frame rate on frame display and just throw away audio
 	// if the buffer somehow gets full.
 	memset(mixBuffer, 0, hwBlockSize * 2 * sizeof(s32));
+	g_rumbleMixing = Rumble::WantsAudio() && rumbleMixBuffer;
+	if (g_rumbleMixing) {
+		memset(rumbleMixBuffer, 0, hwBlockSize * sizeof(s32));
+	}
 
 	audioMixing = true;
 	mixerDMABusy = __AudioAnyChannelPlaying();
@@ -656,6 +693,9 @@ void __AudioUpdate(bool resetRecording) {
 		MeMMIO::AudioMix(mixBuffer, hwBlockSize);
 	}
 	audioMixing = false;
+
+	// The ME's sound (PS1 games) is left out: it can't be told apart from music.
+	Rumble::FeedAudio(g_rumbleMixing ? rumbleMixBuffer : nullptr, hwBlockSize, mixFrequency);
 
 	if (g_Config.bEnableSound) {
 		float multiplier = Volume100ToMultiplier(std::clamp(g_Config.iGameVolume, 0, VOLUMEHI_FULL));

@@ -57,6 +57,7 @@
 #include "Core/Util/PPGeDraw.h"
 #include "Core/RetroAchievements.h"
 #include "Core/ControlMapper.h"
+#include "Core/Rumble/Rumble.h"
 
 #include "GPU/GPU.h"
 #include "GPU/GPUState.h"
@@ -281,6 +282,7 @@ static void ScheduleLagSync() {
 }
 
 void __DisplayInit() {
+	Rumble::OnShutdown();
 	__DisplaySetFramerate();
 	hasSetMode = false;
 	mode = 0;
@@ -349,6 +351,9 @@ void __DisplayDoState(PointerWrap &p) {
 	auto s = p.Section("sceDisplay", 1, 8);
 	if (!s)
 		return;
+	if (p.mode == PointerWrap::MODE_READ) {
+		Rumble::ResetGameState();
+	}
 
 	Do(p, framebuf);
 	Do(p, latchedFramebuf);
@@ -448,6 +453,7 @@ void __DisplayDoState(PointerWrap &p) {
 }
 
 void __DisplayShutdown() {
+	Rumble::OnShutdown();
 	vblankWaitingThreads.clear();
 	vblankWakePending.clear();
 }
@@ -734,6 +740,7 @@ void hleEnterVblank(u64 userdata, int cyclesLate) {
 	lastVblankTicks = CoreTiming::GetTicks(currentMIPS) - cyclesLate;
 
 	__PowerCheckLockedClock();
+	Rumble::OnVBlank();
 
 	DisplayFireVblankStart();
 

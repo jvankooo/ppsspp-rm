@@ -45,6 +45,8 @@ public:
 
 	// Opens on the developer tools page.
 	void OpenDeveloperTools();
+	// Opens on the rumble page (Controls).
+	void OpenRumble();
 
 protected:
 	void dialogFinished(const Screen *dialog, DialogResult result) override;

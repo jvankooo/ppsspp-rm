@@ -75,6 +75,7 @@
 #include "Core/HW/SimpleAudioDec.h"
 #include "Core/MemMap.h"
 #include "Core/Reporting.h"
+#include "Core/Rumble/Rumble.h"
 #include "Common/Serialize/SerializeFuncs.h"
 #include "Common/Serialize/SerializeMap.h"
 
@@ -220,6 +221,9 @@ static int sceMp3Decode(u32 mp3, u32 outPcmPtr) {
 	}
 
 	int pcmBytes = ctx->AuDecode(outPcmPtr);
+	if (pcmBytes > 0 && Memory::IsValidAddress(outPcmPtr)) {
+		Rumble::NoteMusicBuffer(Memory::ReadUnchecked_U32(outPcmPtr), pcmBytes);
+	}
 	if (pcmBytes > 0) {
 		// decode data successfully, delay thread
 		return hleDelayResult(hleLogDebug(Log::ME, pcmBytes), "mp3 decode", mp3DecodeDelay);

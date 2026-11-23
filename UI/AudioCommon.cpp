@@ -22,6 +22,7 @@
 #include "UI/AudioCommon.h"
 #include "UI/BackgroundAudio.h"
 #include "Core/HW/Display.h"
+#include "Core/Rumble/Rumble.h"
 
 StereoResampler g_resampler;
 GranularMixer g_granular;
@@ -42,6 +43,7 @@ void NativeMix(int16_t *outStereo, int numFrames, int sampleRateHz, void *userda
 		g_resampler.Mix(outStereo, numFrames, false, sampleRateHz);
 	}
 	g_BackgroundAudio.SFX().Mix(outStereo, numFrames, sampleRateHz);
+	Rumble::OnAudioPlayed(numFrames, sampleRateHz);
 }
 
 void System_AudioGetDebugStats(char *buf, size_t bufSize) {

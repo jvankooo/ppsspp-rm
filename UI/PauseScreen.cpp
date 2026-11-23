@@ -56,6 +56,7 @@
 #include "Core/HLE/sceNetInet.h"
 #include "Core/HLE/sceNetAdhoc.h"
 #include "Core/Util/GameDB.h"
+#include "Core/Rumble/Rumble.h"
 #include "Core/HLE/NetAdhocCommon.h"
 
 #include "GPU/GPUCommon.h"
@@ -905,6 +906,15 @@ void GamePauseScreen::CreateViews() {
 		});
 	}
 #endif
+
+	// Only for games that have a rumble profile.
+	if (Rumble::GetStatus().profileFound) {
+		mainGroup->Add(new Choice(co->T("Rumble"), ImageID("I_CONTROLLER")))->OnClick.Add([this](UI::EventParams &) {
+			GameSettingsScreen *settings = new GameSettingsScreen(gamePath_);
+			settings->OpenRumble();
+			screenManager()->push(settings);
+		});
+	}
 
 	if (g_Config.bAchievementsEnable && Achievements::HasAchievementsOrLeaderboards()) {
 		mainGroup->Add(new Choice(ac->T("Achievements"), ImageID("I_ACHIEVEMENT")))->OnClick.Add([this](UI::EventParams &e) {

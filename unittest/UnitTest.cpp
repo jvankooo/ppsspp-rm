@@ -140,6 +140,7 @@
 #include "Core/Util/PSARUnpack.h"
 #include "Core/MIPS/MIPSVFPUUtils.h"
 #include "Core/MIPS/MIPSStackWalk.h"
+#include "Core/Rumble/Rumble.h"
 #include "GPU/Common/DepthSwizzle.h"
 #include "GPU/Common/TextureDecoder.h"
 #include "GPU/Common/GPUStateUtils.h"
@@ -5009,6 +5010,58 @@ static bool TestQueueBuf() {
 	return true;
 }
 
+// Core/Rumble's output: test pulses, how they fade, and the strength levels.
+static bool TestRumble() {
+	const bool oldOn = g_Config.bRumble;
+	const int oldStrength = g_Config.iRumbleStrength;
+	g_Config.bRumble = true;
+
+	// Nothing plays: silence.
+	Rumble::MotorState m = Rumble::Sample(time_now_d());
+	EXPECT_EQ_FLOAT(m.ampLow, 0.0f);
+	EXPECT_EQ_FLOAT(m.ampHigh, 0.0f);
+
+	// A heavy pulse (a hit taken): mostly the low band, at full strength right away, gone after it ends.
+	float amps[5];
+	for (int s = 0; s < 5; s++) {
+		g_Config.iRumbleStrength = s;
+		Rumble::TestPulse(0);
+		m = Rumble::Sample(time_now_d());
+		amps[s] = m.ampLow;
+		EXPECT_TRUE(m.ampLow >= m.ampHigh);
+		EXPECT_TRUE(m.freqLow > 100.0f && m.freqLow < 200.0f);
+		sleep_ms(400, "rumble-test");
+		m = Rumble::Sample(time_now_d());
+		EXPECT_EQ_FLOAT(m.ampLow, 0.0f);
+	}
+	// None is silent, and each level is stronger than the one before. Hard reaches full strength.
+	EXPECT_EQ_FLOAT(amps[0], 0.0f);
+	for (int s = 1; s < 5; s++) {
+		EXPECT_TRUE(amps[s] > amps[s - 1]);
+	}
+	EXPECT_TRUE(amps[4] > 0.9f && amps[4] <= 1.0f);
+
+	// A sharp tap (a blow landed): mostly the high band, short.
+	g_Config.iRumbleStrength = 4;
+	Rumble::TestPulse(1);
+	m = Rumble::Sample(time_now_d());
+	EXPECT_TRUE(m.ampHigh > m.ampLow && m.ampHigh > 0.3f);
+	sleep_ms(100, "rumble-test");
+	m = Rumble::Sample(time_now_d());
+	EXPECT_EQ_FLOAT(m.ampHigh, 0.0f);
+
+	// Rumble off: silence.
+	g_Config.bRumble = false;
+	Rumble::TestPulse(0);
+	m = Rumble::Sample(time_now_d());
+	EXPECT_EQ_FLOAT(m.ampLow, 0.0f);
+	sleep_ms(400, "rumble-test");
+
+	g_Config.bRumble = oldOn;
+	g_Config.iRumbleStrength = oldStrength;
+	return true;
+}
+
 static bool TestRequestManager() {
 	RequestManager rm;
 	std::vector<std::string> results;
@@ -5076,6 +5129,7 @@ TestItem availableTests[] = {
 	TEST_ITEM(VFPUDot),
 	TEST_ITEM(MathUtil),
 	TEST_ITEM(Parsers),
+	TEST_ITEM(Rumble),
 	TEST_ITEM(FirmwareVersions),
 	TEST_ITEM(TruncateCpy),
 	TEST_ITEM(MemBlockInfoSaveState),

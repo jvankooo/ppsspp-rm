@@ -92,6 +92,7 @@ SDLJoystick *joystick = NULL;
 
 #if PPSSPP_PLATFORM(SWITCH)
 #include <switch.h>
+#include "SDL/SwitchRumble.h"
 #include "Common/GPU/Vulkan/SwitchLSFG.h"
 #include "Common/GPU/Deko3D/DekoContext.h"
 #include "UI/SwitchForwarderInstaller.h"
@@ -2524,6 +2525,7 @@ int main(int argc, char *argv[]) {
 						 g_Config.fSwitchFrameGenerationFlowScale, g_Config.bSwitchFrameGenerationPerformance,
 						 g_Config.iGPUBackend == (int)GPUBackend::DEKO3D);
 	SwitchLibrary::Initialize();
+	SwitchRumble_Start();
 	if (!forwarderLaunchError.empty())
 		g_OSD.Show(OSDType::MESSAGE_ERROR, "Could not launch game", forwarderLaunchError, 8.0f);
 	File::CreateFullPath(Path("/switch/ppsspp-nx/cache/mesa"));
@@ -2992,6 +2994,7 @@ int main(int argc, char *argv[]) {
 
 #if PPSSPP_PLATFORM(SWITCH)
 	saltynx_stop();
+	SwitchRumble_Stop();
 	SwitchLibrary::Shutdown();
 #endif
 

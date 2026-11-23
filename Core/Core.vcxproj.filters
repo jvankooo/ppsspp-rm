@@ -643,6 +643,9 @@
     <ClCompile Include="Compatibility.cpp">
       <Filter>Core</Filter>
     </ClCompile>
+    <ClCompile Include="Rumble\Rumble.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
     <ClCompile Include="HW\SasReverb.cpp">
       <Filter>HW</Filter>
     </ClCompile>
@@ -2020,6 +2023,9 @@
       <Filter>HLE</Filter>
     </ClInclude>
     <ClInclude Include="Compatibility.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="Rumble\Rumble.h">
       <Filter>Core</Filter>
     </ClInclude>
     <ClInclude Include="HW\SasReverb.h">

@@ -104,6 +104,10 @@ void GameSettingsScreen::OpenDeveloperTools() {
 	OpenPage("GameSettingsTools", "Developer Tools");
 }
 
+void GameSettingsScreen::OpenRumble() {
+	OpenPage("GameSettingsControls", "Rumble");
+}
+
 void GameSettingsScreen::PreCreateViews() {
 	if (RecreatingForPageChange()) {
 		return;

@@ -42,6 +42,7 @@
 #include "Core/HLE/AtracCtx.h"
 #include "Core/HLE/AtracCtx2.h"
 #include "Core/System.h"
+#include "Core/Rumble/Rumble.h"
 
 // Notes about sceAtrac buffer management
 //
@@ -453,6 +454,9 @@ static u32 sceAtracDecodeData(int atracID, u32 outAddr, u32 numSamplesAddr, u32 
 
 	if (outPtr && g_muteFlag[atracID]) {
 		memset(outPtr, 0, atrac->GetOutputChannels() * 2 * numSamplesWritten);
+	}
+	if (outPtr && numSamplesWritten > 0) {
+		Rumble::NoteMusicBuffer(outAddr, atrac->GetOutputChannels() * 2 * numSamplesWritten);
 	}
 
 	if (ret == 0 || ret == SCE_ERROR_ATRAC_API_FAIL) {

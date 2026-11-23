@@ -128,6 +128,7 @@ void AudioChannel::clear() {
 	waitingAddress = 0;
 	waitingLeftVolume = 0;
 	waitingRightVolume = 0;
+	rumbleMusic = false;
 }
 
 void AudioSRCChannel::DoState(PointerWrap &p) {

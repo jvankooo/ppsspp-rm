@@ -21,7 +21,7 @@ SDL_RECIPE_VERSION="3"
 FFMPEG_REPOSITORY="https://github.com/hrydgard/ppsspp-ffmpeg.git"
 FFMPEG_REVISION="1e3b4965632f60b1d85360261d1b9dd45444bc71"
 FFMPEG_RECIPE_VERSION="9"
-MESA_VERSION="26.2.7"
+MESA_VERSION="${SWITCH_MESA_VERSION:-26.2.7}"
 MESA_SDK_SHA256="6c919eb1bbb7df5729940b5b4ecaa5e0daaa05bd06ebde9f5b676ce6c3eff04b"
 
 # Every recursive removal is restricted to generated directories under this checkout.
@@ -247,7 +247,11 @@ PPSSPP_SHA256="$(sha256sum "$DIST_DIR/PPSSPP.nro" | cut -d' ' -f1)"
 	echo "frontend=sdl"
 	echo "source=$SOURCE_REVISION"
 	echo "source_state=$SOURCE_STATE"
-	echo "mesa=$MESA_VERSION archive_sha256=$MESA_SDK_SHA256"
+	if [[ -n "${SWITCH_MESA_VERSION:-}" ]]; then
+		echo "mesa=$MESA_VERSION prefix=$MESA_PREFIX (overridden, not the checked archive)"
+	else
+		echo "mesa=$MESA_VERSION archive_sha256=$MESA_SDK_SHA256"
+	fi
 	echo "sdl=$SDL_REVISION patch=$SDL_PATCH_SUM"
 	echo "ffmpeg=$FFMPEG_REVISION"
 	echo "compiler=$(aarch64-none-elf-gcc -dumpfullversion)"

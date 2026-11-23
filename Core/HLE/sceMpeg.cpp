@@ -120,6 +120,7 @@ extern "C" {
 #include "libavcodec/avcodec.h"
 }
 #include "Core/FFMPEGCompat.h"
+#include "Core/Rumble/Rumble.h"
 static AVPixelFormat pmp_want_pix_fmt;
 
 #endif
@@ -1116,6 +1117,7 @@ static u32 sceMpegAvcDecode(u32 mpeg, u32 auAddr, u32 frameWidth, u32 bufferAddr
 	if (!ctx) {
 		return hleLogWarning(Log::Mpeg, -1, "bad mpeg handle");
 	}
+	Rumble::NoteVideoFrame();
 
 	if (frameWidth == 0) {  // wtf, go sudoku passes in 0xcccccccc
 		if (!ctx->defaultFrameWidth) {

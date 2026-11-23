@@ -1349,9 +1349,17 @@ static constexpr ConfigSetting touchControlSettings[] = {
 
 static constexpr const char *touchButtonStyleNames[] = { "Classic", "Thin borders", "Glowing borders" };
 
+static constexpr const char *rumbleStrengthNames[] = { "None", "Light", "Medium", "Strong", "Hard" };
+
 static constexpr ConfigSetting controlSettings[] = {
 	ConfigSetting("HapticFeedback", SETTING(g_Config, bHapticFeedback), false, CfgFlag::PER_GAME)
 		.Label(I18NCat::CONTROLS, "HapticFeedback", "Haptic Feedback (vibration)"),
+	ConfigSetting("Rumble", SETTING(g_Config, bRumble), true, CfgFlag::DEFAULT)
+		.Label(I18NCat::CONTROLS, "Rumble"),
+	ConfigSetting("RumbleStrength", SETTING(g_Config, iRumbleStrength), 3, CfgFlag::DEFAULT)
+		.Label(I18NCat::CONTROLS, "Rumble strength").Choices(rumbleStrengthNames),
+	ConfigSetting("RumbleLog", SETTING(g_Config, bRumbleLog), false, CfgFlag::DEFAULT)
+		.Label(I18NCat::CONTROLS, "Rumble log (research)"),
 	
 #if PPSSPP_PLATFORM(WINDOWS)
 	ConfigSetting("IgnoreWindowsKey", SETTING(g_Config, bIgnoreWindowsKey), false, CfgFlag::PER_GAME)
