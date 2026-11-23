@@ -162,7 +162,7 @@ struct GestureControlConfig : public ConfigBlock {
 	float fSwipeSensitivity = 1.0f;
 	float fSwipeSmoothing = 0.5f;
 	int iDoubleTapGesture = 0;
-	bool bAnalogGesture = false;
+	int iAnalogGesture = (int)AnalogGestureStick::OFF;
 	float fAnalogGestureSensitivity = 1.0f;
 
 	bool CanResetToDefault() const override { return true; }
@@ -170,6 +170,13 @@ struct GestureControlConfig : public ConfigBlock {
 	std::unique_ptr<ConfigBlock> NewDefault(std::string_view blockName) const override;
 	size_t Size() const override { return sizeof(GestureControlConfig); }  // For sanity checks
 };
+
+// LSFG's optical-flow resolution on the Switch: 0.25 (quarter), 0.5 (half) or 1 (full). Half by default on the Switch 2.
+#if defined(__SWITCH2__)
+constexpr float SWITCH_LSFG_DEFAULT_FLOW_SCALE = 0.5f;
+#else
+constexpr float SWITCH_LSFG_DEFAULT_FLOW_SCALE = 0.25f;
+#endif
 
 struct Config : public ConfigBlock {
 public:
@@ -185,6 +192,9 @@ public:
 	bool bUpdatedInstanceCounter = false;
 
 	int iRunCount; // To be used to for example check for updates every 10 runs and things like that.
+
+	// Use dev-store.ppsspp.org for the Homebrew Store (--dev-store). Not saved.
+	bool bDevStore = false;
 
 	// Debugger
 	bool bAutoRun;  // start immediately
@@ -326,8 +336,11 @@ public:
 	bool bVSync;
 	bool bLowLatencyPresent;
 	bool bSwitchFrameGeneration = false;
-	float fSwitchFrameGenerationFlowScale = 0.25f;
+	float fSwitchFrameGenerationFlowScale = SWITCH_LSFG_DEFAULT_FLOW_SCALE;
 	bool bSwitchFrameGenerationPerformance = true;
+	// Switch 2, docked: frame generation switches the TV to 120 Hz (1440p or 1080p) so a 60 FPS game is doubled to
+	// 120 FPS. Off, the TV keeps its resolution at 60 Hz and only 30 FPS games are doubled.
+	bool bSwitchFrameGeneration120Hz = false;
 
 	bool bSoftwareRendering;
 	bool bSoftwareDisableDithering;
@@ -394,6 +407,9 @@ public:
 	int iCurrentStateSlot;
 	int iRewindSnapshotInterval;
 	bool bUISound;
+	int iUISoundStyle;  // UISoundStyle
+	int iHomeScreenStyle;  // HomeScreenStyle
+	bool bGameBootAnimation;
 	bool bEnableStateUndo;
 	bool bConfirmLoadState;
 	std::string sStateLoadUndoGame;
@@ -474,6 +490,7 @@ public:
 	// iOS only for now
 	bool bAudioMixWithOthers;
 	bool bAudioRespectSilentMode;
+	bool bMuteOnLostFocus;  // Desktop only, see AudioCommon.h.
 
 	// UI
 	bool bShowDebuggerOnLoad;

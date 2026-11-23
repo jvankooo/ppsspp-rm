@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 
 #include "Common/CommonTypes.h"
@@ -13,6 +14,10 @@
 #if PPSSPP_PLATFORM(SWITCH)
 #include <cstdio>
 #include <switch.h>
+#if defined(__SWITCH2__)
+// kaiHEN: the writable region is a staging copy; ARM64XEmitter::FlushIcacheSections publishes it.
+#include "Common/nx2_platform.h"
+#endif
 #endif // PPSSPP_PLATFORM(SWITCH)
 
 // Everything that needs to generate code should inherit from this.
@@ -60,9 +65,9 @@ private:
 	CodeBlock(const CodeBlock &) = delete;
 	void operator=(const CodeBlock &) = delete;
 
-	// A privately used function to set the executable RAM space to something invalid.
+	// A privately used function to set the executable RAM space to something invalid, from offset to end.
 	// For debugging usefulness it should be used to set the RAM to a host specific breakpoint instruction
-	virtual void PoisonMemory(int offset) = 0;
+	virtual void PoisonMemory(int offset, int end) = 0;
 
 public:
 	CodeBlock() {}
@@ -77,7 +82,7 @@ public:
 #if PPSSPP_PLATFORM(SWITCH)
 		Result rc = jitCreate(&jitController, size);
 		if (R_FAILED(rc)) {
-			printf("Failed to create Jitbuffer of size 0x%x err: 0x%x\n", size, rc);
+			ERROR_LOG(Log::JIT, "jitCreate(0x%x) failed: 0x%x", size, rc);
 			region_size = 0;
 			region = nullptr;
 			writableRegion = nullptr;
@@ -87,6 +92,9 @@ public:
 
 		region = (u8 *)jitController.rx_addr;
 		writableRegion = (u8 *)jitController.rw_addr;
+#if defined(__SWITCH2__)
+		nx2JitRegister(&jitController);
+#endif
 #else // PPSSPP_PLATFORM(SWITCH)
 		// The protection will be set to RW if PlatformIsWXExclusive.
 		region = (u8 *)AllocateExecutableMemory(region_size);
@@ -96,21 +104,27 @@ public:
 	}
 
 	// Always clear code space with breakpoints, so that if someone accidentally executes
-	// uninitialized, it just breaks into the debugger.
-	void ClearCodeSpace(int offset) {
+	// uninitialized, it just breaks into the debugger. Past the code pointer it's still poisoned from
+	// the last clear, so after the first, only the part up to it is. Returns where the cleared part
+	// ends, as an offset (for flushing the icache over it).
+	size_t ClearCodeSpace(int offset) {
 		if (!region) {
-			return;
+			return offset;
 		}
 		if (PlatformIsWXExclusive()) {
 			ProtectMemoryPages(region, region_size, MEM_PROT_READ | MEM_PROT_WRITE);
 		}
+		const size_t used = T::GetCodePointer() - region;
+		const size_t end = poisonedAll_ ? std::max((size_t)offset, used) : region_size;
+		poisonedAll_ = true;
 		// If not WX Exclusive, no need to call ProtectMemoryPages because we never change the protection from RWX.
-		PoisonMemory(offset);
+		PoisonMemory(offset, (int)end);
 		ResetCodePtr(offset);
 		if (PlatformIsWXExclusive()) {
 			// Need to re-protect the part we didn't clear (with MAP_JIT, this thread's view of it all).
 			ProtectMemoryPages(region, offset, MEM_PROT_READ | MEM_PROT_EXEC);
 		}
+		return end;
 	}
 
 	// BeginWrite/EndWrite assume that we keep appending.
@@ -163,8 +177,10 @@ public:
 		ProtectMemoryPages(region, region_size, MEM_PROT_READ | MEM_PROT_WRITE);
 		FreeExecutableMemory(region, region_size);
 #else // !PPSSPP_PLATFORM(SWITCH)
+#if defined(__SWITCH2__)
+		nx2JitUnregister(&jitController);
+#endif
 		jitClose(&jitController);
-		printf("[NXJIT]: Jit closed\n");
 #endif // PPSSPP_PLATFORM(SWITCH)
 		region = nullptr;
 		writableRegion = nullptr;
@@ -205,6 +221,8 @@ private:
 	const uint8_t *writeStart_ = nullptr;
 	uint8_t *writableRegion = nullptr;
 	size_t writeEstimated_ = 0;
+	// Whether ClearCodeSpace() has poisoned the whole region once.
+	bool poisonedAll_ = false;
 #if PPSSPP_PLATFORM(SWITCH)
 	Jit jitController;
 #endif // PPSSPP_PLATFORM(SWITCH)

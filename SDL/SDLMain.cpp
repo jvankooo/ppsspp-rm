@@ -2,6 +2,9 @@
 #include <cstdlib>
 #include <unistd.h>
 #include <pwd.h>
+#if defined(__linux__) || defined(__APPLE__)
+#include <sys/utsname.h>
+#endif
 
 #include "ppsspp_config.h"
 #include <SDL3/SDL.h>
@@ -74,6 +77,7 @@ SDLJoystick *joystick = NULL;
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
 #include "Core/HLE/sceUsbMic.h"
+#include "UI/AudioCommon.h"
 #include "SDLGLGraphicsContext.h"
 #include "SDLUtil.h"
 
@@ -93,12 +97,17 @@ SDLJoystick *joystick = NULL;
 #if PPSSPP_PLATFORM(SWITCH)
 #include <switch.h>
 #include "SDL/SwitchRumble.h"
+#include "SDL/SwitchAudio.h"
 #include "Common/GPU/Vulkan/SwitchLSFG.h"
 #include "Common/GPU/Deko3D/DekoContext.h"
 #include "UI/SwitchForwarderInstaller.h"
 #include "UI/SwitchLibrary.h"
 #include "UI/SwitchUpdate.h"
 #include "Common/SwitchSaltyNX.h"
+#if defined(__SWITCH2__)
+#include "Common/nx2_platform.h"
+#include "Core/Util/RecentFiles.h"
+#endif
 
 #define LIBNX_SWKBD_LIMIT 500 // enforced by HOS
 extern "C" {
@@ -106,6 +115,10 @@ u32 __nx_applet_type = AppletType_Application;
 size_t __nx_heap_size = 0;
 }
 
+#if defined(__SWITCH2__)
+// Switch 2: every renderer presents to libounce's default window (sized by nx2DisplayInit).
+static AppletOperationMode g_switchOperationMode;
+#else
 static ViDisplay g_switchDisplay;
 static ViLayer g_switchLayer;
 static NWindow g_switchWindow;
@@ -170,6 +183,7 @@ extern "C" void __nx_win_exit() {
 	viCloseDisplay(&g_switchDisplay);
 	viExit();
 }
+#endif // __SWITCH2__
 #endif
 
 GlobalUIState lastUIState = UISTATE_MENU;
@@ -234,6 +248,12 @@ static std::string SwitchNormalizeNroPath(std::string path) {
 }
 
 static void CheckSwitchOperationMode() {
+#if defined(__SWITCH2__)
+	// Vulkan and GL pacing (drako3d paces in Present): a swap interval Mesa sets withdraws the 120 Hz request.
+	if (g_Config.iGPUBackend != (int)GPUBackend::DEKO3D) {
+		nx2DisplayApply(g_Config.bVSync ? 1 : 0);
+	}
+#endif
 	AppletOperationMode operationMode = appletGetOperationMode();
 	if (operationMode != g_switchOperationMode) {
 		g_switchOperationMode = operationMode;
@@ -245,6 +265,9 @@ static void CheckSwitchOperationMode() {
 
 static int g_DesktopWidth = 0;
 static int g_DesktopHeight = 0;
+// Set when starting in fullscreen: the size to give the window for when it leaves fullscreen.
+static int g_pendingWindowedWidth = 0;
+static int g_pendingWindowedHeight = 0;
 static float g_DesktopDPI = 1.0f;
 static float g_ForcedDPI = 0.0f; // if this is 0.0f, use g_DesktopDPI
 static float g_RefreshRate = 60.f;
@@ -772,6 +795,14 @@ static void PollSDLMicrophone() {
 
 // Must be called after NativeInit().
 static void InitSDLAudioDevice(const std::string &name = "") {
+#if PPSSPP_PLATFORM(SWITCH)
+	// audout keeps less audio queued than devkitPro's SDL driver, the fallback.
+	g_retFmt = { SDL_AUDIO_S16, 2, SwitchAudio::kSampleRate };
+	g_audioFramesPerBuffer = SwitchAudio::kPeriodFrames;
+	if (SwitchAudio::Start()) {
+		return;
+	}
+#endif
 	SDL_AudioSpec fmt{};
 	fmt.freq = g_sampleRate;
 	fmt.format = SDL_AUDIO_S16;
@@ -857,6 +888,9 @@ static void InitSDLAudioDevice(const std::string &name = "") {
 }
 
 static void StopSDLAudioDevice() {
+#if PPSSPP_PLATFORM(SWITCH)
+	SwitchAudio::Stop();
+#endif
 	if (audioStream) {
 		SDL_DestroyAudioStream(audioStream);
 		audioStream = nullptr;
@@ -1294,6 +1328,15 @@ std::string System_GetProperty(SystemProperty prop) {
 	case SYSPROP_DEVICE_MODEL:
 		return "Mac";
 #endif
+#if defined(__linux__) || defined(__APPLE__)
+	case SYSPROP_SYSTEMBUILD: {
+		struct utsname name;
+		if (uname(&name) != 0) {
+			return "";
+		}
+		return std::string(name.sysname) + " " + name.release;
+	}
+#endif
 	case SYSPROP_NAME:
 #ifdef _WIN32
 		return "SDL:Windows";
@@ -1494,6 +1537,17 @@ float System_GetPropertyFloat(SystemProperty prop) {
 	case SYSPROP_DISPLAY_REFRESH_RATE:
 		return g_RefreshRate;
 	case SYSPROP_DISPLAY_DPI:
+#if defined(__SWITCH2__)
+		if (g_ForcedDPI == 0.0f) {
+			// The UI keeps the Switch's 720-line layout at every output size (1080p handheld, up to 4K docked), like
+			// the launcher's 1280x720 logical size.
+			u32 width = 1920, height = 1080;
+			nx2DisplaySize(&width, &height);
+			if (height > 720) {
+				return 96.0f * (float)height / 720.0f;
+			}
+		}
+#endif
 		return (g_ForcedDPI == 0.0f ? g_DesktopDPI : g_ForcedDPI) * 96.0;
 	case SYSPROP_DISPLAY_SAFE_INSET_LEFT:
 	case SYSPROP_DISPLAY_SAFE_INSET_RIGHT:
@@ -1811,6 +1865,14 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 			});
 			break;
 		}
+	case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN:
+		if (g_pendingWindowedWidth > 0) {
+			// SDL ignores a size set while fullscreen, so this waits until now.
+			SDL_SetWindowSize(window, g_pendingWindowedWidth, g_pendingWindowedHeight);
+			g_pendingWindowedWidth = 0;
+			g_pendingWindowedHeight = 0;
+		}
+		break;
 	case SDL_EVENT_WINDOW_MOVED:
 		{
 			Uint64 window_flags = SDL_GetWindowFlags(window);
@@ -1824,6 +1886,7 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 
 	case SDL_EVENT_WINDOW_FOCUS_LOST:
 		{
+			Audio_SetWindowFocused(false);
 			if (g_Config.bPauseOnLostFocus && GetUIState() == UISTATE_INGAME) {
 				Core_Break(BreakReason::UIFocus, 0);
 			}
@@ -1832,6 +1895,7 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 
 	case SDL_EVENT_WINDOW_FOCUS_GAINED:
 		{
+			Audio_SetWindowFocused(true);
 			if (Core_BreakReason() == BreakReason::UIFocus) {
 				Core_Resume();
 			}
@@ -1878,16 +1942,9 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 			// Convenience subset of what "Enable standard shortcut keys" does on Windows.
 			if (g_Config.bSystemControls) {
 				bool ctrl = bool(event.key.mod & SDL_KMOD_CTRL);
-				if (ctrl && (k == SDLK_W))
-				{
-					if (Core_IsStepping())
-						Core_Resume();
-					Core_Stop();
-					System_PostUIMessage(UIMessage::REQUEST_GAME_STOP);
-					// NOTE: Unlike Windows version, this
-					// does not need Core_WaitInactive();
-					// since SDL does not have a separate
-					// UI thread.
+				if (ctrl && (k == SDLK_W)) {
+					// Like on Windows: the UI asks first, with the same popup as the pause screen's Exit.
+					System_PostUIMessage(UIMessage::REQUEST_GAME_STOP, "confirm");
 				}
 
 				/*
@@ -2288,11 +2345,19 @@ int main(int argc, char *argv[]) {
 		}
 	}
 	SetCurrentThreadToProcessAffinity();
+#if defined(__SWITCH2__)
+	g_switchOperationMode = appletGetOperationMode();
+	nx2DisplayInit();
+#endif
 	if (argc > 0 && argv[0]) {
 		g_switchExecutablePath = SwitchNormalizeNroPath(argv[0]);
 	}
 	if (g_switchExecutablePath.empty()) {
+#if defined(__SWITCH2__)
+		g_switchExecutablePath = "sdmc:/switch/ppsspp-nx/PPSSPP-NX2.nro";
+#else
 		g_switchExecutablePath = "sdmc:/switch/ppsspp-nx/PPSSPP.nro";
+#endif
 	}
 	SwitchUpdate_SetExecutablePath(g_switchExecutablePath);
 	SwitchForwarder_SetExecutablePath(g_switchExecutablePath);
@@ -2512,6 +2577,8 @@ int main(int argc, char *argv[]) {
 	const char *external_dir = "/tmp";
 #endif
 
+	SDLJoystick::RemapLegacyAxisMappings();
+
 	// After NativeInit, code should no longer look at cmdLineOptions, they should have been translated
 	// into g_Config settings. This is because NativeInit may modify g_Config settings based on the command line options.
 #if PPSSPP_PLATFORM(SWITCH)
@@ -2528,8 +2595,14 @@ int main(int argc, char *argv[]) {
 	SwitchRumble_Start();
 	if (!forwarderLaunchError.empty())
 		g_OSD.Show(OSDType::MESSAGE_ERROR, "Could not launch game", forwarderLaunchError, 8.0f);
+#if defined(__SWITCH2__)
+	// (Ampere code, apart from the Switch's)
+	File::CreateFullPath(Path("/switch/ppsspp-nx/cache/mesa-nx2"));
+	setenv("MESA_SHADER_CACHE_DIR", "/switch/ppsspp-nx/cache/mesa-nx2", 1);
+#else
 	File::CreateFullPath(Path("/switch/ppsspp-nx/cache/mesa"));
 	setenv("MESA_SHADER_CACHE_DIR", "/switch/ppsspp-nx/cache/mesa", 1);
+#endif
 	setenv("MESA_SHADER_CACHE_MAX_SIZE", "256M", 1);
 #endif
 
@@ -2598,9 +2671,19 @@ int main(int argc, char *argv[]) {
 			return false;
 		}
 #endif
+#if defined(__SWITCH2__)
+		if (backend != GPUBackend::DEKO3D) {
+			// (after the launcher's GL)
+			nx2MesaGpuRecover();
+		}
+#endif
 		if (backend == GPUBackend::OPENGL || backend == GPUBackend::ZINK) {
 #if PPSSPP_PLATFORM(SWITCH)
 			setenv("GALLIUM_DRIVER", backend == GPUBackend::ZINK ? "zink" : "nouveau", 1);
+#if defined(__SWITCH2__)
+			// (the Switch 2 Mesa's EGL picks its Gallium driver by this one)
+			setenv("MESA_SWITCH_GL_DRIVER", backend == GPUBackend::ZINK ? "zink" : "nvc0", 1);
+#endif
 #endif
 			SDL_GLContext glContext = nullptr;
 			window = CreateSDLGLWindowAndContext(x, y, w, h, mode, cmdLineOptions.force_gl_version, &glContext, errorMessage);
@@ -2623,6 +2706,10 @@ int main(int argc, char *argv[]) {
 			if (!window) { *errorMessage = SDL_GetError(); return false; }
 			windowDesc.winsys = WINDOWSYSTEM_SDL;
 			windowDesc.data1 = window;
+#if defined(__SWITCH2__)
+			// (after the launcher's GL)
+			nx2GpuReleaseForDrako3d();
+#endif
 			ctx = new Deko3DGraphicsContext();
 #endif
 #if PPSSPP_PLATFORM(MAC)
@@ -2755,6 +2842,31 @@ int main(int argc, char *argv[]) {
 
 	// Initialization can select a fallback after NativeInit set the active backend.
 	SetGPUBackend((GPUBackend)g_Config.iGPUBackend);
+#if !defined(MOBILE_DEVICE) && !defined(USING_FBDEV)
+	// Starting in fullscreen, the window was created at the desktop's size, which is also what it goes
+	// back to when leaving fullscreen (#11991), so it gets a window's size when it does. (Creating it at that
+	// size instead briefly shows a window that some desktops leave a stale frame of.)
+	if (g_Config.bFullScreen && (g_DesktopWidth >= 480 * 2 || g_DesktopHeight >= 272 * 2)) {
+		int windowedW = 480 * 2 * set_scale;
+		int windowedH = 272 * 2 * set_scale;
+		if (!landscape) {
+			std::swap(windowedW, windowedH);
+		}
+		// A saved size covering the whole desktop most likely came from leaving fullscreen before this fix.
+		if (g_Config.iWindowWidth > 0 && g_Config.iWindowHeight > 0 && (g_Config.iWindowWidth < g_DesktopWidth || g_Config.iWindowHeight < g_DesktopHeight)) {
+			windowedW = g_Config.iWindowWidth;
+			windowedH = g_Config.iWindowHeight;
+		}
+		if (set_xres > 0) {
+			windowedW = set_xres;
+		}
+		if (set_yres > 0) {
+			windowedH = set_yres;
+		}
+		g_pendingWindowedWidth = windowedW;
+		g_pendingWindowedHeight = windowedH;
+	}
+#endif
 
 	// At this point, we have a window that we can show finally.
 	SDL_ShowWindow(window);
@@ -2990,7 +3102,15 @@ int main(int argc, char *argv[]) {
 	SDL_DestroyWindow(window);
 	window = nullptr;
 
+#if defined(__SWITCH2__)
+	// Read before NativeShutdown, which requests an exit itself on every way out.
+	const bool quitRequested = g_QuitRequested;
+#endif
 	NativeShutdown();
+#if defined(__SWITCH2__)
+	// (global destructors do not run here: the worker would still run when the homebrew loader takes the process back)
+	g_recentFiles.Shutdown();
+#endif
 
 #if PPSSPP_PLATFORM(SWITCH)
 	saltynx_stop();
@@ -3023,16 +3143,34 @@ int main(int argc, char *argv[]) {
 		socketExit();
 		g_socketInitialized = false;
 	}
-	romfsExit();
+	const Result romfsExitResult = romfsExit();
 #endif
 
 #if PPSSPP_PLATFORM(SWITCH)
+#if defined(__SWITCH2__)
+	// Quitting the launcher still shows one frame whose MainScreen asks to restart into it: the quit wins.
+	if (quitRequested && g_RestartRequested) {
+		g_RestartRequested = false;
+	}
+#endif
 	if (g_RestartRequested) {
+		std::string updateError;
+		if (!SwitchUpdate_InstallPending(R_SUCCEEDED(romfsExitResult), &updateError)) {
+			fprintf(stderr, "Update installation failed: %s\n", updateError.c_str());
+			ErrorApplicationConfig error{};
+			errorApplicationCreate(&error, updateError.c_str(), nullptr);
+			errorApplicationShow(&error);
+		}
 		bool handoffReady = g_restartParams.empty() || SwitchWriteRestartHandoff(g_restartParams);
+#if defined(__SWITCH2__)
+		// No restart: it would start kaiHEN's host game. The loader runs PPSSPP again (envSetNextLoad below).
+		(void)handoffReady;
+#else
 		if (handoffReady && (__nx_applet_type == AppletType_Application || __nx_applet_type == AppletType_SystemApplication)) {
 			appletRestartProgram(nullptr, 0);
 			remove(SWITCH_RESTART_HANDOFF);
 		}
+#endif
 		std::string restartArgs = g_switchExecutablePath;
 		if (!g_restartParams.empty()) {
 			restartArgs += " ";

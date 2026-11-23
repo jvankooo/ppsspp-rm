@@ -5,6 +5,9 @@
 
 #include "Common/GPU/Vulkan/VulkanLoader.h"
 #include "Common/GPU/Vulkan/lsfg/lsfg_bridge.h"
+#if defined(__SWITCH2__)
+#include "Common/nx2_platform.h"
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -33,6 +36,10 @@ std::atomic_uint32_t s_speedControlState{0};
 uint32_t s_observedSpeedControlState = 0;
 
 float s_flowScale = 0.25f;
+// The optical-flow resolution: quarter, half or full.
+float FlowScale(float configured) {
+	return configured == 1.0f ? 1.0f : configured == 0.5f ? 0.5f : 0.25f;
+}
 bool s_performanceMode = true;
 bool s_deviceFeatureEnabled = false;
 VkInstance s_instance = VK_NULL_HANDLE;
@@ -138,6 +145,16 @@ bool SourceIsHighRate()
 	return s_sourceSamples >= 8 && s_sourceIntervalNs > 0.0 && s_sourceIntervalNs < 30'000'000.0;
 }
 
+// A 50/60 FPS game is doubled only at 120 Hz (handheld): Vulkan keeps the TV's mode docked (the 120 Hz option is Drako3D's).
+bool DisplayDoublesHighRate()
+{
+#if defined(__SWITCH2__)
+	return nx2DisplayRefreshRate() >= 120;
+#else
+	return false;
+#endif
+}
+
 bool TryCreateRuntime(VkQueue queue)
 {
 	if (s_runtime)
@@ -169,7 +186,7 @@ bool TryCreateRuntime(VkQueue queue)
 }
 
 void SwitchLSFG_Configure(bool prepared, float flowScale, bool performanceMode, bool deko3d) {
-	s_flowScale = std::isfinite(flowScale) && flowScale == 0.5f ? 0.5f : 0.25f;
+	s_flowScale = FlowScale(flowScale);
 	s_performanceMode = performanceMode;
 	const bool installed = FileReadable(kShaderDllPath);
 	s_installed.store(installed, std::memory_order_release);
@@ -331,7 +348,7 @@ bool SwitchLSFG_Present(VkQueue queue, const VkPresentInfoKHR& presentInfo, VkRe
 		s_observedSpeedControlState = speedControlState;
 	}
 	const bool requested = enabled && inGame && !fastForward;
-	const float flowScale = g_Config.fSwitchFrameGenerationFlowScale == 0.5f ? 0.5f : 0.25f;
+	const float flowScale = FlowScale(g_Config.fSwitchFrameGenerationFlowScale);
 	if (flowScale != s_flowScale || g_Config.bSwitchFrameGenerationPerformance != s_performanceMode) {
 		DestroyRuntime();
 		s_initAttempted = false;
@@ -365,7 +382,7 @@ bool SwitchLSFG_Present(VkQueue queue, const VkPresentInfoKHR& presentInfo, VkRe
 
 	if (s_rateDecision < 0 && s_sourceSamples >= 8)
 		s_rateDecision = SourceIsHighRate() ? 1 : 0;
-	if (s_rateDecision == 1)
+	if (s_rateDecision == 1 && !DisplayDoublesHighRate())
 	{
 		s_highRatePassthrough.store(true, std::memory_order_release);
 		if (sourceInterval >= 31'500'000)
@@ -409,8 +426,11 @@ SwitchLSFGDekoState SwitchLSFG_PollDeko() {
 					s_sessionOverride.load(std::memory_order_acquire) != 0;
 	state.speedControlState = s_speedControlState.load(std::memory_order_acquire);
 	state.active = state.enabled && GetUIState() == UISTATE_INGAME && !(state.speedControlState & 1);
-	state.flowScale = g_Config.fSwitchFrameGenerationFlowScale == 0.5f ? 0.5f : 0.25f;
+	state.flowScale = FlowScale(g_Config.fSwitchFrameGenerationFlowScale);
 	state.performance = g_Config.bSwitchFrameGenerationPerformance;
+#if defined(__SWITCH2__)
+	state.highRefresh = g_Config.bSwitchFrameGeneration120Hz;
+#endif
 	state.resetSession = s_resetSessionRequested.exchange(false, std::memory_order_acq_rel);
 	s_enabledRequested.store(state.enabled, std::memory_order_release);
 	return state;
@@ -448,9 +468,22 @@ bool SwitchLSFG_IsHighRatePassthrough()
 		s_highRatePassthrough.load(std::memory_order_acquire);
 }
 
+bool SwitchLSFG_DoublesSourceRate(float sourceFPS)
+{
+	if (sourceFPS >= 27.0f && sourceFPS <= 33.5f)
+		return true;
+#if defined(__SWITCH2__)
+	// A 50/60 FPS game: handheld (120 Hz), or docked with Drako3D and the 120 Hz Docked Mode option.
+	if (sourceFPS >= 45.0f && sourceFPS <= 62.0f)
+		return nx2DisplayRefreshRate() >= 120 ||
+			   (s_deko3d.load(std::memory_order_acquire) && g_Config.bSwitchFrameGeneration120Hz);
+#endif
+	return false;
+}
+
 bool SwitchLSFG_RequestEnabled(bool enabled, float sourceFPS)
 {
-	if (enabled && (!s_available.load(std::memory_order_acquire) || sourceFPS < 27.0f || sourceFPS > 33.5f))
+	if (enabled && (!s_available.load(std::memory_order_acquire) || !SwitchLSFG_DoublesSourceRate(sourceFPS)))
 		return false;
 	s_sessionOverride.store(enabled ? 1 : 0, std::memory_order_release);
 	s_enabledRequested.store(enabled, std::memory_order_release);

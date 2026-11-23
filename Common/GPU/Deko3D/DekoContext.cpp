@@ -7,7 +7,13 @@
 
 #include "Common/GPU/Deko3D/DekoContext.h"
 
+#if defined(__SWITCH2__)
+// drako3d: deko3d's API on the Switch 2's Ampere GPU.
+#include <drako3d.hpp>
+#include "Common/nx2_platform.h"
+#else
 #include <deko3d.hpp>
+#endif
 #include <switch.h>
 #include <algorithm>
 #include <array>
@@ -50,9 +56,19 @@ constexpr unsigned IMAGE_DESCRIPTORS = 65536;
 constexpr unsigned SAMPLER_DESCRIPTORS = 1024;
 constexpr uint32_t UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024;
 constexpr uint32_t COMMAND_CHUNK_SIZE = 1024 * 1024;
+// Readbacks reuse one CPU-cached buffer up to this size (reading uncached memory is slow); a larger one is made per call.
+constexpr uint32_t READBACK_KEEP_SIZE = 16 * 1024 * 1024;
 constexpr uint32_t SCRATCH_PER_WARP = 32 * 1024;
 constexpr uint32_t TEXTURE_SLAB_SIZE = 2 * 1024 * 1024;
 constexpr uint32_t SHADER_SLAB_SIZE = 1024 * 1024;
+
+// The barrier after a copy, before the GPU reads its result. On the Switch 2's Ampere, copies run on the copy engine
+// alongside graphics, which only DkBarrier_Full waits for.
+#if defined(__SWITCH2__)
+constexpr DkBarrier AFTER_COPY_BARRIER = DkBarrier_Full;
+#else
+constexpr DkBarrier AFTER_COPY_BARRIER = DkBarrier_None;
+#endif
 
 // deko3d's default callback exits the app on any error. Log it instead, and let the caller handle the failure.
 void DekoDebug(void *, const char *context, DkResult result, const char *message) {
@@ -91,6 +107,9 @@ struct Device {
 								const char *tag = "GPU buffer") {
 		const uint32_t bytes = Align(size, DK_MEMBLOCK_ALIGNMENT);
 		dk::MemBlock block = dk::MemBlockMaker{device, bytes}.setFlags(flags).create();
+		if (!block) {
+			ERROR_LOG(Log::G3D, "deko3d could not allocate %u bytes (%s)", bytes, tag);
+		}
 		return dk::UniqueMemBlock{std::move(block)};
 	}
 };
@@ -163,6 +182,7 @@ struct Shader : ShaderModule {
 	uint32_t arrays = 0;
 	uint32_t textures = 0;
 	uint32_t clipDistanceMode = 0;  // Deko3DClipDistanceMode() of a vertex shader.
+	uint32_t clipDistanceEnable = 0;  // The clip and cull distances a vertex shader writes, one bit each.
 	~Shader() override { owner->Retire(std::move(code)); }
 	ShaderStage GetStage() const override { return stage; }
 };
@@ -285,6 +305,8 @@ struct Frame {
 	size_t commandChunk = 0;
 	std::vector<dk::UniqueMemBlock> uploadMemory;
 	size_t uploadChunk = 0;
+	// The most chunks used since the last trim (TrimFrameMemory).
+	size_t commandPeak = 1, uploadPeak = 1;
 	uint32_t uploadOffset = 0;
 	dk::UniqueMemBlock descriptors;
 	uint32_t imageCount = 0, samplerCount = 0;
@@ -428,6 +450,11 @@ private:
 	void UpdateFrameGeneration();
 	bool PresentImage(const DkImage &image, uint32_t width, uint32_t height);
 	bool ReportQueueFault(const char *operation);
+	dk::UniqueMemBlock AllocateOrReclaim(uint32_t size, uint32_t flags, const char *tag);
+	void ReclaimMemory();
+	void TrimFrameMemory(Frame &frame);
+	bool EnsureSwapchain();
+	dk::MemBlock ReadbackBuffer(uint32_t bytes, dk::UniqueMemBlock &temporary);
 	bool Apply();
 	Image *Color(Framebuffer *fbo);
 	Image *DepthImage(Framebuffer *fbo);
@@ -438,6 +465,8 @@ private:
 	unsigned frameIndex_ = 0;
 	int frameCount_ = 0;
 	bool reportedQueueFault_ = false;
+	dk::UniqueMemBlock readback_;
+	int swapchainRetryFrame_ = -1;
 	bool active_ = false, stateDirty_ = true, depthClamp_ = false;
 	bool resourcesStopped_ = false;
 	bool glslangInitialized_ = false;
@@ -450,6 +479,7 @@ private:
 	Deko3DLSFG::FramePacer framePacer_;
 	Deko3DLSFG::Config frameGenerationConfig_;
 	SwitchLSFGDekoState frameGenerationState_;
+	bool highRefreshRequested_ = false;
 	std::future<Deko3DLSFG::PreparedShaders> framePreparation_;
 	std::thread framePreparationThread_;
 	std::shared_ptr<std::atomic<bool>> framePreparationCancel_;
@@ -523,7 +553,11 @@ bool Context::Init(void *window, std::string *error) {
 	}
 	shaderLanguageDesc_ = ShaderLanguageDesc(GLSL_VULKAN);
 	caps_.vendor = GPUVendor::VENDOR_NVIDIA;
+#if defined(__SWITCH2__)
+	caps_.deviceName = "Nintendo Switch 2 Tegra T239 (drako3d)";
+#else
 	caps_.deviceName = "Nintendo Switch Tegra X1 (deko3d)";
+#endif
 	caps_.maxTextureSize = 16384;
 	// Clip and cull distances share eight slots. Apply() sets the hardware's cull mode, which deko3d doesn't.
 	caps_.maxClipDistances = 8;
@@ -566,6 +600,10 @@ bool Context::Init(void *window, std::string *error) {
 }
 
 Context::~Context() {
+#if defined(__SWITCH2__)
+	// (the launcher and the next game start at the TV's resolution)
+	nx2DisplaySetFrameGeneration(false);
+#endif
 	if (framePreparationCancel_) {
 		framePreparationCancel_->store(true, std::memory_order_release);
 	}
@@ -606,14 +644,98 @@ void Context::GrowCommands(void *user, DkCmdBuf buffer, size_t minimum) {
 	Frame &frame = context->Current();
 	++frame.commandChunk;
 	if (frame.commandChunk >= frame.commandMemory.size()) {
-		frame.commandMemory.push_back(
-			context->device_->Allocate(std::max(COMMAND_CHUNK_SIZE, Align((uint32_t)minimum, DK_MEMBLOCK_ALIGNMENT)),
-									   DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached, "command buffer"));
+		dk::UniqueMemBlock memory = context->AllocateOrReclaim(std::max(COMMAND_CHUNK_SIZE, Align((uint32_t)minimum, DK_MEMBLOCK_ALIGNMENT)),
+															  DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached, "command buffer");
+		if (!memory) {
+			// deko3d cannot record further. (Not kept, so a later frame tries again.)
+			--frame.commandChunk;
+			return;
+		}
+		frame.commandMemory.push_back(std::move(memory));
 	}
+	frame.commandPeak = std::max(frame.commandPeak, frame.commandChunk + 1);
 	auto &memory = frame.commandMemory[frame.commandChunk];
-	if (memory) {
-		dkCmdBufAddMemory(buffer, memory, 0, dkMemBlockGetSize(memory));
+	dkCmdBufAddMemory(buffer, memory, 0, dkMemBlockGetSize(memory));
+}
+
+dk::UniqueMemBlock Context::AllocateOrReclaim(uint32_t size, uint32_t flags, const char *tag) {
+	dk::UniqueMemBlock block = device_->Allocate(size, flags, tag);
+	if (!block) {
+		ReclaimMemory();
+		block = device_->Allocate(size, flags, tag);
 	}
+	// (UniqueHandle has no move constructor of its own: it takes over the handle)
+	return dk::UniqueMemBlock{static_cast<dk::MemBlock &&>(block)};
+}
+
+// After a failed allocation: free now what the GPU is done with, instead of when its frame slot comes back.
+void Context::ReclaimMemory() {
+	for (unsigned i = 0; i < FRAME_COUNT; ++i) {
+		Frame &frame = frames_[i];
+		const bool current = i == frameIndex_;
+		if (!current) {
+			if (frame.submitted) {
+				if (dkFenceWait(&frame.fence, 0) != DkResult_Success) {
+					continue;
+				}
+				frame.submitted = false;
+			}
+			frame.retired.clear();
+		}
+		// The chunks past those the frame is using (all but the first of an idle frame).
+		const size_t uploads = current ? frame.uploadChunk + 1 : 1, commands = current ? frame.commandChunk + 1 : 1;
+		if (frame.uploadMemory.size() > uploads) {
+			frame.uploadMemory.resize(uploads);
+		}
+		if (frame.commandMemory.size() > commands) {
+			frame.commandMemory.resize(commands);
+		}
+	}
+	device_->texturePool.TrimEmpty();
+	WARN_LOG(Log::G3D, "deko3d ran out of memory: freed idle GPU memory");
+}
+
+// Upload and command chunks a frame slot has not needed since the last trim (a scene load or a large upload added them).
+void Context::TrimFrameMemory(Frame &frame) {
+	if (frame.uploadMemory.size() > frame.uploadPeak) {
+		frame.uploadMemory.resize(frame.uploadPeak);
+	}
+	if (frame.commandMemory.size() > frame.commandPeak) {
+		frame.commandMemory.resize(frame.commandPeak);
+	}
+	frame.uploadPeak = frame.commandPeak = 1;
+}
+
+// A swapchain that could not be made (out of memory on a resize) is tried again once per frame.
+bool Context::EnsureSwapchain() {
+	if (swapchain_) {
+		return true;
+	}
+	if (swapchainRetryFrame_ == frameCount_) {
+		return false;
+	}
+	swapchainRetryFrame_ = frameCount_;
+	std::string error;
+	if (!Swapchain(&error)) {
+		ERROR_LOG(Log::G3D, "%s", error.c_str());
+		return false;
+	}
+	stateDirty_ = true;
+	return true;
+}
+
+// The readback buffer (CPU cached). Readbacks wait for the GPU, so it is free again once they return.
+dk::MemBlock Context::ReadbackBuffer(uint32_t bytes, dk::UniqueMemBlock &temporary) {
+	constexpr uint32_t flags = DkMemBlockFlags_CpuCached | DkMemBlockFlags_GpuCached;
+	if (bytes > READBACK_KEEP_SIZE) {
+		temporary = AllocateOrReclaim(bytes, flags, "readback");
+		return temporary;
+	}
+	if (!readback_ || dkMemBlockGetSize(readback_) < bytes) {
+		readback_ = nullptr;
+		readback_ = AllocateOrReclaim(std::max<uint32_t>(Align(bytes, DK_MEMBLOCK_ALIGNMENT), 1024 * 1024), flags, "readback");
+	}
+	return readback_;
 }
 
 void Context::BeginFrame(DebugFlags flags) {
@@ -631,6 +753,10 @@ void Context::BeginFrame(DebugFlags flags) {
 	frame.retired.clear();
 	if ((frameCount_ & 63) == 0) {
 		device_->texturePool.TrimEmpty();
+	}
+	// Each frame slot once every 1024 frames.
+	if ((frameCount_ & 1023) < (int)FRAME_COUNT) {
+		TrimFrameMemory(frame);
 	}
 	frame.commands.clear();
 	resourceBindings_.Invalidate();
@@ -656,21 +782,20 @@ Upload Context::Allocate(uint32_t size, uint32_t alignment) {
 	Frame &frame = Current();
 	frame.uploadOffset = Align(frame.uploadOffset, alignment);
 	if (frame.uploadChunk >= frame.uploadMemory.size()) {
-		frame.uploadMemory.push_back(device_->Allocate(std::max(UPLOAD_CHUNK_SIZE, Align(size, DK_MEMBLOCK_ALIGNMENT)),
-													   DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached, "upload chunk"));
+		dk::UniqueMemBlock block = AllocateOrReclaim(std::max(UPLOAD_CHUNK_SIZE, Align(size, DK_MEMBLOCK_ALIGNMENT)),
+													 DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached, "upload chunk");
+		if (!block) {
+			return {};
+		}
+		frame.uploadMemory.push_back(std::move(block));
 	}
-	if (!frame.uploadMemory[frame.uploadChunk]) {
-		return {};
-	}
+	frame.uploadPeak = std::max(frame.uploadPeak, frame.uploadChunk + 1);
 	if (frame.uploadOffset + size > dkMemBlockGetSize(frame.uploadMemory[frame.uploadChunk])) {
 		++frame.uploadChunk;
 		frame.uploadOffset = 0;
 		return Allocate(size, alignment);
 	}
 	auto &block = frame.uploadMemory[frame.uploadChunk];
-	if (!block) {
-		return {};
-	}
 	Upload result{{block.getGpuAddr() + frame.uploadOffset, size}, (uint8_t *)block.getCpuAddr() + frame.uploadOffset};
 	frame.uploadOffset += size;
 	return result;
@@ -796,7 +921,7 @@ bool Context::ReportQueueFault(const char *operation) {
 
 void Context::UpdateFrameGeneration() {
 	const auto state = SwitchLSFG_PollDeko();
-	const Deko3DLSFG::Config config{state.performance, state.flowScale == .5f ? 2u : 4u};
+	const Deko3DLSFG::Config config{state.performance, state.flowScale == 1.f ? 1u : state.flowScale == .5f ? 2u : 4u};
 	const bool qualityChanged = config.performance != frameGenerationConfig_.performance;
 	const bool changed = qualityChanged || config.flowDenominator != frameGenerationConfig_.flowDenominator ||
 						 state.enabled != frameGenerationState_.enabled;
@@ -870,6 +995,18 @@ void Context::UpdateFrameGeneration() {
 		framePreparation_ = task->get_future();
 		framePreparationThread_ = std::thread([task] { (*task)(); });
 	}
+#if defined(__SWITCH2__)
+	// Docked with the 120 Hz output option, a 50/60 FPS game moves the output to 1440p: wait until the game is measured
+	// and the window has the size it keeps, rather than make a generator for the TV's resolution that is then replaced.
+	uint32_t windowWidth = 0, windowHeight = 0;
+	const bool resizing = backbuffers_[0] && R_SUCCEEDED(nwindowGetDimensions((NWindow *)window_, &windowWidth, &windowHeight)) &&
+		(windowWidth != (uint32_t)backbuffers_[0]->Width() || windowHeight != (uint32_t)backbuffers_[0]->Height());
+	const bool measuring = state.highRefresh && nx2DisplayRefreshRate() < 120 && !framePacer_.LowRateSource();
+	if (!frameGenerator_ && (resizing || measuring)) {
+		SwitchLSFG_SetDekoStatus(true, false);
+		return;
+	}
+#endif
 	if (!frameGenerator_ && !frameShaderDirectory_.empty()) {
 		Deko3DLSFG::Services services;
 		services.device = device_->device;
@@ -904,6 +1041,9 @@ bool Context::PresentImage(const DkImage &image, uint32_t width, uint32_t height
 		return false;
 	}
 	if (acquired_ < 0) {
+		if (!EnsureSwapchain()) {
+			return false;
+		}
 		acquired_ = device_->queue.acquireImage(swapchain_);
 	}
 	if (acquired_ < 0 || acquired_ >= (int)backbuffers_.size()) {
@@ -933,6 +1073,21 @@ void Context::Present(PresentMode mode) {
 		return;
 	}
 	presentMode_ = mode;
+#if defined(__SWITCH2__)
+	// With the 120 Hz output option, docked, a 50/60 FPS game moves the output to 120 Hz (1440p or 1080p) while frame
+	// generation is on. Until UpdateFrameGeneration creates the generator, the game is measured here.
+	if (!generatedDisplay_ && frameGenerationState_.active) {
+		const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+		framePacer_.Observe(now, true, false);
+	}
+	if (!frameGenerationState_.enabled || !frameGenerationState_.highRefresh) {
+		highRefreshRequested_ = false;
+	} else if (frameGenerationState_.active && framePacer_.HighRateSource()) {
+		highRefreshRequested_ = true;
+	}
+	nx2DisplaySetFrameGeneration(highRefreshRequested_);
+	framePacer_.SetRefreshRate(nx2DisplayRefreshRate());
+#endif
 	if (generatedDisplay_ && displayUsed_) {
 		const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 		const auto decision = framePacer_.Observe(now, frameGenerationState_.active, frameGenerator_ != nullptr);
@@ -956,15 +1111,30 @@ void Context::Present(PresentMode mode) {
 			}
 		}
 		SwitchLSFG_SetDekoStatus(!frameGenerationFailed_, decision.highRate);
+#if defined(__SWITCH2__)
+		nx2DisplayApply(generated || mode == PresentMode::FIFO ? 1 : 0);
+#else
 		swapchain_.setSwapInterval(generated || mode == PresentMode::FIFO ? 1 : 0);
-		if (generated && !PresentImage(*frameGenerator_->GeneratedImage(), generatedDisplay_->Width(), generatedDisplay_->Height())) {
-			return;
-		}
-		if (!PresentImage(generatedDisplay_->image, generatedDisplay_->Width(), generatedDisplay_->Height())) {
-			return;
+#endif
+		const auto presentStart = std::chrono::steady_clock::now();
+		bool presented = !generated || PresentImage(*frameGenerator_->GeneratedImage(), generatedDisplay_->Width(), generatedDisplay_->Height());
+		presented = presented && PresentImage(generatedDisplay_->image, generatedDisplay_->Width(), generatedDisplay_->Height());
+		framePacer_.PresentTime(
+			std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - presentStart).count());
+		if (!presented) {
+			// No image to present to (or a fault): still hand the frame's work to the GPU and end the frame.
+			Submit(false);
+			if (ReportQueueFault("present")) {
+				return;
+			}
+			device_->queue.flush();
 		}
 	} else {
+#if defined(__SWITCH2__)
+		nx2DisplayApply(mode == PresentMode::FIFO ? 1 : 0);
+#else
 		swapchain_.setSwapInterval(mode == PresentMode::FIFO ? 1 : 0);
+#endif
 		Submit(false);
 		if (ReportQueueFault("present")) {
 			return;
@@ -981,6 +1151,12 @@ void Context::Present(PresentMode mode) {
 	active_ = false;
 	frameIndex_ = (frameIndex_ + 1) % FRAME_COUNT;
 	++frameCount_;
+#if defined(__SWITCH2__)
+	// Docking, the TV's resolution or frame generation (1440 lines at 120 Hz docked) resized the window.
+	if (nx2DisplayUpdate()) {
+		Resize();
+	}
+#endif
 }
 
 uint32_t Context::GetDataFormatSupport(DataFormat format) const {
@@ -1027,7 +1203,8 @@ Texture *Context::CreateImage(const TextureDesc &desc, bool render, bool zeroFil
 	texture->identity = device_->nextImage++;
 	dk::ImageLayout layout;
 	uint32_t flags = 0;
-	if (!DataFormatIsBlockCompressed(desc.format, nullptr)) {
+	const bool compressed = DataFormatIsBlockCompressed(desc.format, nullptr);
+	if (!compressed) {
 		flags |= DkImageFlags_Usage2DEngine;
 	}
 	if (desc.format == DataFormat::R8G8B8A8_UNORM || desc.format == DataFormat::R16G16B16A16_FLOAT) {
@@ -1036,10 +1213,16 @@ Texture *Context::CreateImage(const TextureDesc &desc, bool render, bool zeroFil
 	if (render) {
 		flags |= DkImageFlags_UsageRender | DkImageFlags_HwCompression;
 	}
+	// deko3d lays out 6..8 rows (of blocks) with one-gob tiles but describes the first level with two,
+	// so its descriptor and uploads reach into the next pooled texture. Ask for the tile of the layout.
+	if (desc.depth == 1 && (compressed ? (desc.height + 3) / 4 : desc.height) <= 8) {
+		flags |= DkImageFlags_CustomTileSize;
+	}
 	dk::ImageLayoutMaker{device_->device}
 		.setType(desc.depth > 1 ? DkImageType_3D : DkImageType_2D)
 		.setFlags(flags)
 		.setFormat(Format(desc.format))
+		.setTileSize(DkTileSize_OneGob)
 		.setDimensions(desc.width, desc.height, desc.depth)
 		.setMipLevels(desc.mipLevels)
 		.initialize(layout);
@@ -1052,15 +1235,15 @@ Texture *Context::CreateImage(const TextureDesc &desc, bool render, bool zeroFil
 	// A 512-byte layout uses a generic mapping. Other layouts can retype whole GPU pages.
 	if (!render && !zeroFill && alignment == 512 && size <= TEXTURE_SLAB_SIZE / 2) {
 		texture->pooledMemory = device_->texturePool.Allocate(size, alignment, TEXTURE_SLAB_SIZE, [&](uint32_t bytes) {
-			return device_->Allocate(bytes, imageFlags, "texture slab");
+			return AllocateOrReclaim(bytes, imageFlags, "texture slab");
 		});
 		if (!texture->pooledMemory) {
 			return nullptr;
 		}
 		texture->image.initialize(layout, texture->pooledMemory.Storage(), texture->pooledMemory.Offset());
 	} else {
-		texture->memory = device_->Allocate(size, imageFlags | (zeroFill ? DkMemBlockFlags_ZeroFillInit : 0),
-										   render ? "render target" : "texture");
+		texture->memory = AllocateOrReclaim(size, imageFlags | (zeroFill ? DkMemBlockFlags_ZeroFillInit : 0),
+											render ? "render target" : "texture");
 		if (!texture->memory) {
 			return nullptr;
 		}
@@ -1151,13 +1334,11 @@ void Context::UpdateTextureLevels(Texture *source, const uint8_t **data, Texture
 		if (!upload.cpu) {
 			return;
 		}
-		if (callback) {
-			if (!callback(upload.cpu, data[level], w, h, d, rowPitch, slicePitch)) {
-				continue;
-			}
-		} else if (data[level]) {
+		// A callback returns false to have the level's data uploaded as it is.
+		const bool written = callback && callback(upload.cpu, data[level], w, h, d, rowPitch, slicePitch);
+		if (!written && data[level]) {
 			memcpy(upload.cpu, data[level], slicePitch * d);
-		} else {
+		} else if (!written) {
 			memset(upload.cpu, 0, slicePitch * d);
 		}
 		DkImageView view = texture->view;
@@ -1169,7 +1350,7 @@ void Context::UpdateTextureLevels(Texture *source, const uint8_t **data, Texture
 		DkImageRect region{0, 0, 0, w, h, d};
 		Commands().copyBufferToImage(buffer, view, region);
 	}
-	Commands().barrier(DkBarrier_None, DkInvalidateFlags_Image);
+	Commands().barrier(AFTER_COPY_BARRIER, DkInvalidateFlags_Image);
 }
 
 void Context::UpdateTextureRegions(Texture *source, int level, const TextureRegionUpdate *regions, int count) {
@@ -1192,7 +1373,7 @@ void Context::UpdateTextureRegions(Texture *source, int level, const TextureRegi
 		DkImageRect rect{(uint32_t)region.x, (uint32_t)region.y, 0, (uint32_t)region.w, (uint32_t)region.h, 1};
 		Commands().copyBufferToImage(buffer, view, rect);
 	}
-	Commands().barrier(DkBarrier_None, DkInvalidateFlags_Image);
+	Commands().barrier(AFTER_COPY_BARRIER, DkInvalidateFlags_Image);
 }
 
 SamplerState *Context::SamplerWithLod(const SamplerStateDesc &desc, float minLod, float maxLod, float bias) {
@@ -1241,13 +1422,22 @@ ShaderModule *Context::CreateNativeShader(ShaderStage stage, ShaderLanguage lang
 	cache.magic = 0x434B4544;
 	cache.version = 2;
 	cache.stage = (uint32_t)stage;
+#if defined(__SWITCH2__)
+	// (Ampere code from uam2rt: its own key and directory)
+	std::string identity = "uam2rt-1-ppsspp-5/" + StringFromInt((int)stage) + "/" + StringFromInt(textureBindingBase) + "/" + source;
+#else
 	std::string identity = "uam-c0d76aa9-ppsspp-5/" + StringFromInt((int)stage) + "/" + StringFromInt(textureBindingBase) + "/" + source;
+#endif
 	sha1((uint8_t *)identity.data(), (int)identity.size(), cache.sourceHash);
 	std::string key;
 	for (uint8_t byte : cache.sourceHash) {
 		key += StringFromFormat("%02x", byte);
 	}
+#if defined(__SWITCH2__)
+	const Path directory("/switch/ppsspp-nx/cache/drako3d");
+#else
 	const Path directory("/switch/ppsspp-nx/cache/deko3d");
+#endif
 	const Path cachePath = directory / (key + ".dksh");
 	std::string compiledBytes;
 	uint32_t arrays = 0, textures = 0;
@@ -1321,6 +1511,7 @@ ShaderModule *Context::CreateNativeShader(ShaderStage stage, ShaderLanguage lang
 	shader->textures = textures;
 	if (stage == ShaderStage::Vertex) {
 		shader->clipDistanceMode = Deko3DClipDistanceMode(clipDistances, cullDistances);
+		shader->clipDistanceEnable = (1u << std::min(clipDistances + cullDistances, 8u)) - 1;
 	}
 	const uint32_t bytes = header.codeSize + DK_SHADER_CODE_UNUSABLE_SIZE;
 	const uint32_t slabSize = std::max(SHADER_SLAB_SIZE, Align(bytes, DK_MEMBLOCK_ALIGNMENT));
@@ -1433,11 +1624,12 @@ bool Context::Apply() {
 			cmd.barrier(DkBarrier_None, DkInvalidateFlags_Shader);
 		}
 		DkShader const *shaders[2]{};
-		uint32_t clipDistanceMode = 0;
+		uint32_t clipDistanceMode = 0, clipDistanceEnable = 0;
 		for (auto &shader : pipeline_->shaders) {
 			shaders[shader->stage == ShaderStage::Vertex ? 0 : 1] = &shader->shader;
 			if (shader->stage == ShaderStage::Vertex) {
 				clipDistanceMode = shader->clipDistanceMode;
+				clipDistanceEnable = shader->clipDistanceEnable;
 			}
 		}
 		cmd.bindShaders(DkStageFlag_GraphicsMask, {shaders[0], shaders[1]});
@@ -1445,6 +1637,12 @@ bool Context::Apply() {
 		// an increasing-method header with one data word, on the 3D subchannel (0).
 		const uint32_t clipMode[2] = {(1u << 29) | (1u << 16) | 0x650, clipDistanceMode};
 		dkCmdBufReplayCmds(cmd, clipMode, 2);
+#if defined(__SWITCH2__)
+		// SET_USER_CLIP_ENABLE (3D method 0x544): only the distances the shader writes, as NVK does. drako3d enables all
+		// eight, and uam2rt's shaders export whole vec4s of distances, so the unwritten ones clipped with undefined values.
+		const uint32_t clipEnable[2] = {(1u << 29) | (1u << 16) | 0x544, clipDistanceEnable};
+		dkCmdBufReplayCmds(cmd, clipEnable, 2);
+#endif
 		// All native framebuffers are single-sample. Bind the full draw state,
 		// including stages and sample settings unused by PPSSPP.
 		cmd.bindMultisampleState(dk::MultisampleState{});
@@ -1613,7 +1811,8 @@ bool Context::Apply() {
 }
 
 void Context::SetScissorRect(int x, int y, int w, int h) {
-	DkScissor scissor{(uint32_t)std::max(0, x), (uint32_t)std::max(0, y), (uint32_t)std::max(0, w), (uint32_t)std::max(0, h)};
+	const int left = std::max(0, x), top = std::max(0, y);
+	DkScissor scissor{(uint32_t)left, (uint32_t)top, (uint32_t)std::max(0, w - (left - x)), (uint32_t)std::max(0, h - (top - y))};
 	scissor_ = scissor;
 	Commands().setScissors(0, scissor);
 }
@@ -1738,7 +1937,8 @@ bool Context::ReadTexture(Texture *texture, int level, void *pixels, int stride)
 	if (stride < w * bpp) {
 		return false;
 	}
-	auto memory = device_->Allocate(w * h * bpp, DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached, "texture readback");
+	dk::UniqueMemBlock temporary;
+	dk::MemBlock memory = ReadbackBuffer(w * h * bpp, temporary);
 	if (!memory) {
 		return false;
 	}
@@ -1750,6 +1950,7 @@ bool Context::ReadTexture(Texture *texture, int level, void *pixels, int stride)
 	Commands().barrier(DkBarrier_Primitives, DkInvalidateFlags_Image);
 	Commands().copyImageToBuffer(view, region, buffer);
 	Submit(true);
+	armDCacheFlush(memory.getCpuAddr(), w * h * bpp);
 	for (int row = 0; row < h; ++row) {
 		memcpy((uint8_t *)pixels + row * stride, (uint8_t *)memory.getCpuAddr() + row * w * bpp, w * bpp);
 	}
@@ -1812,6 +2013,8 @@ void Context::DrawIndexed(int count, int offset) {
 
 void Context::DrawIndexedClippedBatchUP(const void *vertices, int vertexCount, const void *indices, int indexCount,
 										Slice<ClippedDraw> draws, const void *uniforms, size_t size) {
+	Upload vertexUpload{}, indexUpload{};
+	int vertexStride = 0;
 	for (const ClippedDraw &draw : draws) {
 		BindPipeline(draw.pipeline);
 		BindSamplerStates(0, 1, const_cast<SamplerState **>(&draw.samplerState));
@@ -1824,7 +2027,24 @@ void Context::DrawIndexedClippedBatchUP(const void *vertices, int vertexCount, c
 		}
 		UpdateDynamicUniformBuffer(uniforms, size);
 		SetScissorRect(draw.clipx, draw.clipy, draw.clipw, draw.cliph);
-		DrawIndexedUP(vertices, vertexCount, (const uint16_t *)indices + draw.indexOffset, draw.indexCount);
+		if (!Apply()) {
+			continue;
+		}
+		// The draws share the vertices and indices: they are uploaded once (again only for another vertex size).
+		const int stride = pipeline_->layout->desc.stride;
+		if (stride != vertexStride) {
+			vertexStride = stride;
+			vertexUpload = Push(vertices, vertexCount * stride, 16);
+		}
+		if (!indexUpload.cpu) {
+			indexUpload = Push(indices, indexCount * sizeof(uint16_t), 4);
+		}
+		if (!vertexUpload.cpu || !indexUpload.cpu) {
+			return;
+		}
+		Commands().bindVtxBuffer(0, vertexUpload.gpu.addr, vertexUpload.gpu.size);
+		Commands().bindIdxBuffer(DkIdxFormat_Uint16, indexUpload.gpu.addr + draw.indexOffset * sizeof(uint16_t));
+		Commands().drawIndexed(pipeline_->primitive, draw.indexCount, 1, 0, 0, 0);
 	}
 }
 
@@ -1835,10 +2055,17 @@ bool Context::Swapchain(std::string *error) {
 		return false;
 	}
 	dk::ImageLayout layout;
+#if defined(__SWITCH2__)
+	// VI2 presents uncompressed images.
+	const uint32_t swapchainFlags = DkImageFlags_UsageRender | DkImageFlags_UsagePresent | DkImageFlags_Usage2DEngine;
+#else
+	const uint32_t swapchainFlags =
+		DkImageFlags_UsageRender | DkImageFlags_UsagePresent | DkImageFlags_Usage2DEngine | DkImageFlags_HwCompression;
+#endif
 	dk::ImageLayoutMaker{device_->device}
 		.setFormat(DkImageFormat_RGBA8_Unorm)
 		.setDimensions(width, height)
-		.setFlags(DkImageFlags_UsageRender | DkImageFlags_UsagePresent | DkImageFlags_Usage2DEngine | DkImageFlags_HwCompression)
+		.setFlags(swapchainFlags)
 		.initialize(layout);
 	std::array<DkImage const *, 3> images{};
 	for (unsigned i = 0; i < images.size(); ++i) {
@@ -1851,7 +2078,7 @@ bool Context::Swapchain(std::string *error) {
 		desc.depth = desc.mipLevels = 1;
 		desc.format = DataFormat::R8G8B8A8_UNORM;
 		image->Dimensions(desc);
-		image->memory = device_->Allocate((uint32_t)layout.getSize(), DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image, "swapchain image");
+		image->memory = AllocateOrReclaim((uint32_t)layout.getSize(), DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image, "swapchain image");
 		if (!image->memory) {
 			image->Release();
 			*error = "Could not allocate deko3d backbuffers";
@@ -1875,6 +2102,11 @@ bool Context::Swapchain(std::string *error) {
 	depth.format = DataFormat::D24_S8;
 	backDepth_.reset(static_cast<Image *>(CreateImage(depth, true)));
 	if (!backDepth_) {
+		// (all or nothing: EnsureSwapchain makes it again)
+		swapchain_ = nullptr;
+		for (auto &image : backbuffers_) {
+			image.reset(nullptr);
+		}
 		*error = "Could not allocate the deko3d depth buffer";
 		return false;
 	}
@@ -1921,7 +2153,7 @@ Image *Context::Color(Framebuffer *framebuffer) {
 		return generatedDisplay_.ptr;
 	}
 	if (acquired_ < 0) {
-		if (ReportQueueFault("acquire")) {
+		if (ReportQueueFault("acquire") || !EnsureSwapchain()) {
 			return nullptr;
 		}
 		acquired_ = device_->queue.acquireImage(swapchain_);
@@ -2051,7 +2283,7 @@ void Context::CopyFramebufferImage(Framebuffer *src, int level, int x, int y, in
 		} else {
 			Commands().copyImage(a, from, b, to);
 		}
-		Commands().barrier(DkBarrier_None, DkInvalidateFlags_Image);
+		Commands().barrier(AFTER_COPY_BARRIER, DkInvalidateFlags_Image);
 	}
 }
 
@@ -2115,7 +2347,8 @@ bool Context::CopyFramebufferToMemory(Framebuffer *src, Aspect aspect, int x, in
 	if (!source || x + w > source->Width() || y + h > source->Height()) {
 		return false;
 	}
-	auto readback = device_->Allocate(w * h * 4, DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached, "framebuffer readback");
+	dk::UniqueMemBlock temporary;
+	dk::MemBlock readback = ReadbackBuffer(w * h * 4, temporary);
 	if (!readback) {
 		return false;
 	}
@@ -2124,6 +2357,7 @@ bool Context::CopyFramebufferToMemory(Framebuffer *src, Aspect aspect, int x, in
 	Commands().barrier(DkBarrier_Primitives, DkInvalidateFlags_Image);
 	Commands().copyImageToBuffer(source->view, region, buffer);
 	Submit(true);
+	armDCacheFlush(readback.getCpuAddr(), w * h * 4);
 	const uint8_t *data = (const uint8_t *)readback.getCpuAddr();
 	if (aspect == Aspect::COLOR_BIT) {
 		ConvertFromRGBA8888((uint8_t *)pixels, data, stride, w, w, h, format);
@@ -2153,9 +2387,14 @@ bool Context::CopyFramebufferToMemory(Framebuffer *src, Aspect aspect, int x, in
 }
 
 std::string Context::GetInfoString(InfoField info) const {
+#if defined(__SWITCH2__)
+	constexpr const char *api = "drako3d";
+#else
+	constexpr const char *api = "deko3d";
+#endif
 	switch (info) {
 	case InfoField::APINAME:
-		return "deko3d";
+		return api;
 	case InfoField::APIVERSION:
 		return "Native Horizon";
 	case InfoField::VENDORSTRING:
@@ -2164,7 +2403,7 @@ std::string Context::GetInfoString(InfoField info) const {
 	case InfoField::SHADELANGVERSION:
 		return "GLSL 450 / UAM";
 	case InfoField::DRIVER:
-		return "deko3d";
+		return api;
 	default:
 		return "";
 	}
@@ -2250,7 +2489,11 @@ SamplerState *Deko3DCreateSampler(DrawContext *draw, const SamplerStateDesc &des
 
 Deko3DGraphicsContext::~Deko3DGraphicsContext() { ShutdownSurface(); }
 bool Deko3DGraphicsContext::InitAPI(void *, std::string *name, std::string *) {
+#if defined(__SWITCH2__)
+	*name = "Nintendo Switch 2 Tegra T239 (drako3d)";
+#else
 	*name = "Nintendo Switch Tegra X1 (deko3d)";
+#endif
 	return true;
 }
 bool Deko3DGraphicsContext::InitSurface(WindowSystem, void *, void *, std::string *error) {
@@ -2263,7 +2506,11 @@ bool Deko3DGraphicsContext::InitSurface(WindowSystem, void *, void *, std::strin
 		ShutdownSurface();
 		return false;
 	}
+#if defined(__SWITCH2__)
+	SetGPUBackend(GPUBackend::DEKO3D, "NVIDIA Tegra T239");
+#else
 	SetGPUBackend(GPUBackend::DEKO3D, "NVIDIA Tegra X1");
+#endif
 	return true;
 }
 void Deko3DGraphicsContext::ShutdownSurface() {

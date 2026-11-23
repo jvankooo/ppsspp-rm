@@ -152,6 +152,15 @@ void TextureCacheDeko3D::BuildTexture(TexCacheEntry *const entry) {
 		ReleaseTexture(entry, true);
 		return;
 	}
+	if (retryUnscaled_) {
+		// Out of GPU memory: without its replacement or scaling, as Vulkan does.
+		plan.replaced = nullptr;
+		plan.doReplace = false;
+		plan.createW /= plan.scaleFactor;
+		plan.createH /= plan.scaleFactor;
+		plan.scaleFactor = 1;
+		plan.hardwareScaling = false;
+	}
 	Draw::DataFormat format = PSPTextureFormat((GETextureFormat)entry->format, gstate.getClutPaletteFormat());
 	if (plan.decodeToClut8) {
 		format = Draw::DataFormat::R8_UNORM;
@@ -160,7 +169,9 @@ void TextureCacheDeko3D::BuildTexture(TexCacheEntry *const entry) {
 	} else if (plan.scaleFactor > 1 || plan.saveTexture) {
 		format = Draw::DataFormat::R8G8B8A8_UNORM;
 	}
-	if (g_Config.iTexFiltering == TEX_FILTER_AUTO_MAX_QUALITY && plan.w <= 256 && plan.h <= 256 && plan.depth == 1 && !plan.doReplace) {
+	// (not a palette applied in the shader: its texels are 8-bit indices)
+	if (g_Config.iTexFiltering == TEX_FILTER_AUTO_MAX_QUALITY && plan.w <= 256 && plan.h <= 256 && plan.depth == 1 && !plan.doReplace &&
+		!plan.decodeToClut8) {
 		format = Draw::DataFormat::R8G8B8A8_UNORM;
 	}
 	const int levelsToLoad = plan.depth > 1 ? 1 : std::min(plan.levelsToCreate, plan.levelsToLoad);
@@ -235,6 +246,15 @@ void TextureCacheDeko3D::BuildTexture(TexCacheEntry *const entry) {
 	};
 	Draw::Texture *texture = draw_->CreateTexture(desc);
 	if (!texture) {
+		WARN_LOG(Log::G3D, "Texture cache ran out of GPU memory; decimating");
+		decimationCounter_ = 0;
+		Decimate(entry, true);
+		if (!retryUnscaled_ && (plan.scaleFactor > 1 || plan.doReplace)) {
+			retryUnscaled_ = true;
+			BuildTexture(entry);
+			retryUnscaled_ = false;
+			return;
+		}
 		ERROR_LOG(Log::G3D, "Could not allocate deko3d texture %dx%d", desc.width, desc.height);
 	}
 	ReleaseTexture(entry, true);
