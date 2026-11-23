@@ -52,3 +52,8 @@ Typing it on the Switch is easy to get wrong: you can instead save it in a text 
 sdmc:/switch/ppsspp-nx/steamgriddb_key.txt. It's read the next time covers are downloaded
 (or when you open the key setting), and the file is renamed to steamgriddb_key.txt.imported.
 The key setting shows the key's first and last 4 characters, to compare with the website.
+
+Y (Game menu) > Cover settings has three choices: download a cover, download a background
+(Classic theme), or use a local image. Each replaces the old file. The list shows each image's
+size, type and file size. Backgrounds open a crop screen: left stick or d-pad moves the 16:9
+frame, L / R zoom, Y resets, A saves. Y removes a custom cover, X a custom background.

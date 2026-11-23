@@ -33,6 +33,7 @@ struct SteamGridDBArtwork {
 	std::string thumbnailUrl;
 	int width = 0;
 	int height = 0;
+	std::string mime;  // image/png or image/jpeg
 };
 
 SteamGridDBResult SteamGridDB_Search(const std::string &apiKey, const std::string &title, std::vector<SteamGridDBGame> *games,
@@ -42,6 +43,8 @@ SteamGridDBResult SteamGridDB_GetIcons(const std::string &apiKey, int64_t gameId
 SteamGridDBResult SteamGridDB_GetArtwork(const std::string &apiKey, int64_t gameId, bool background,
 	std::vector<SteamGridDBArtwork> *artworks, const std::atomic<bool> *cancel);
 SteamGridDBResult SteamGridDB_DownloadImage(const std::string &url, std::vector<uint8_t> *data, const std::atomic<bool> *cancel);
+// The size of an image without downloading it (a HEAD request). The API doesn't list file sizes.
+SteamGridDBResult SteamGridDB_GetFileSize(const std::string &url, int64_t *bytes, const std::atomic<bool> *cancel);
 const char *SteamGridDB_ResultMessage(SteamGridDBResult result);
 
 // API keys are 32 letters and digits. Drops what pasting tends to add: spaces, line breaks, quotes, "Bearer".

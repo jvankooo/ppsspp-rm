@@ -162,6 +162,7 @@ void AppendArtworks(const std::string &response, std::vector<SteamGridDBArtwork>
 			artwork.thumbnailUrl = artwork.url;
 		artwork.width = item.getInt("width", 0);
 		artwork.height = item.getInt("height", 0);
+		item.getString("mime", &artwork.mime);
 		artworks->push_back(std::move(artwork));
 		if (artworks->size() == 64)
 			break;
@@ -248,6 +249,43 @@ SteamGridDBResult SteamGridDB_DownloadImage(const std::string &url, std::vector<
 	if (response.size() < 64 || DetectImageFileType((const uint8_t *)response.data(), response.size()) == ImageFileType::UNKNOWN)
 		return SteamGridDBResult::InvalidResponse;
 	data->assign(response.begin(), response.end());
+	return SteamGridDBResult::OK;
+}
+
+SteamGridDBResult SteamGridDB_GetFileSize(const std::string &url, int64_t *bytes, const std::atomic<bool> *cancel) {
+	*bytes = -1;
+	if (url.rfind("https://", 0) != 0)
+		return SteamGridDBResult::InvalidResponse;
+	CURL *curl = curl_easy_init();
+	if (!curl)
+		return SteamGridDBResult::NetworkError;
+	curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+	curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
+	curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+	curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
+	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 12L);
+	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+	curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+	SwitchCurlUseSystemCAs(curl);
+	curl_easy_setopt(curl, CURLOPT_USERAGENT, "PPSSPP-nx/" PPSSPP_SWITCH_RELEASE_VERSION);
+	curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+	curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, TransferProgress);
+	curl_easy_setopt(curl, CURLOPT_XFERINFODATA, cancel);
+	const CURLcode curlResult = curl_easy_perform(curl);
+	long responseCode = 0;
+	curl_off_t length = -1;
+	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &responseCode);
+	curl_easy_getinfo(curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &length);
+	curl_easy_cleanup(curl);
+	if (cancel && cancel->load(std::memory_order_relaxed))
+		return SteamGridDBResult::Cancelled;
+	if (curlResult != CURLE_OK || responseCode < 200 || responseCode >= 300)
+		return SteamGridDBResult::NetworkError;
+	if (length < 0)
+		return SteamGridDBResult::InvalidResponse;
+	*bytes = (int64_t)length;
 	return SteamGridDBResult::OK;
 }
 

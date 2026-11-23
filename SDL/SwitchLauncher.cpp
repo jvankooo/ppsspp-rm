@@ -8,6 +8,7 @@
 
 #include "SDL/SwitchLauncher.h"
 #include "SDL/SwitchLauncherUtil.h"
+#include "SDL/SwitchArtworkCrop.h"
 #include "SDL/SwitchInputNames.h"
 #include "Common/SwitchUIColors.h"
 #include "Common/Common.h"
@@ -210,6 +211,19 @@ uint8_t *DecodeArtwork(const std::string &data, int *width, int *height) {
 		return nullptr;
 	}
 	return pixels;
+}
+
+// Horizon's rename does not replace an existing file: the old artwork is deleted first.
+bool ReplaceWithFile(const Path &temporary, const Path &target) {
+	if (File::Exists(target) && !File::Delete(target)) {
+		File::Delete(temporary);
+		return false;
+	}
+	if (!File::Rename(temporary, target)) {
+		File::Delete(temporary);
+		return false;
+	}
+	return true;
 }
 
 std::string ArtKey(const Path &path) {
@@ -436,6 +450,7 @@ private:
 	int FinishArtworkPicker(int result);
 	int ArtworkPicker(const std::vector<SteamGridDBArtwork> &artwork, bool background, bool icons = false, UiText gameName = {});
 	void DownloadArtwork(Entry &entry, bool background);
+	bool CropBackground(const uint8_t *pixels, int width, int height, ArtworkRect *crop);
 	void ImportCover(Entry &entry);
 	void LaunchFile(const Path &path);
 	void Store();
@@ -4628,6 +4643,68 @@ int Launcher::ArtworkPicker(const std::vector<SteamGridDBArtwork> &artwork, bool
 	const std::string gameName((std::string_view)rawgameName);
 	cancelArtwork_ = false;
 	int selected = 0, top = 0;
+	// The API doesn't list file sizes: ask the server for each (HEAD), the highlighted one first.
+	std::mutex sizeMutex;
+	std::vector<int64_t> sizes(artwork.size(), -2);  // -2 not asked yet, -1 unknown
+	std::atomic<bool> stopSizes{false};
+	std::atomic<int> wantedSize{0};
+	std::thread sizeThread([&] {
+		while (!stopSizes) {
+			int next = -1;
+			{
+				std::lock_guard<std::mutex> lock(sizeMutex);
+				const int wanted = wantedSize;
+				if (wanted >= 0 && wanted < (int)sizes.size() && sizes[wanted] == -2) {
+					next = wanted;
+				} else {
+					for (int i = 0; i < (int)sizes.size(); ++i) {
+						if (sizes[i] == -2) {
+							next = i;
+							break;
+						}
+					}
+				}
+			}
+			if (next < 0) {
+				break;
+			}
+			int64_t bytes = -1;
+			if (SteamGridDB_GetFileSize(artwork[next].url, &bytes, &stopSizes) == SteamGridDBResult::Cancelled) {
+				break;
+			}
+			std::lock_guard<std::mutex> lock(sizeMutex);
+			sizes[next] = bytes;
+		}
+	});
+	struct SizeJoin {
+		std::atomic<bool> &stop;
+		std::thread &thread;
+		~SizeJoin() {
+			stop = true;
+			thread.join();
+		}
+	} sizeJoin{stopSizes, sizeThread};
+	auto details = [&](int index, bool full) {
+		const SteamGridDBArtwork &item = artwork[index];
+		std::string text = StringFromFormat("%d x %d", item.width, item.height);
+		if (full && !item.mime.empty()) {
+			const size_t slash = item.mime.find('/');
+			std::string type = slash == std::string::npos ? item.mime : item.mime.substr(slash + 1);
+			std::transform(type.begin(), type.end(), type.begin(), [](unsigned char c) { return (char)toupper(c); });
+			text += "  " + type;
+		}
+		int64_t bytes;
+		{
+			std::lock_guard<std::mutex> lock(sizeMutex);
+			bytes = sizes[index];
+		}
+		if (bytes >= 0) {
+			text += "  " + NiceSizeFormat((uint64_t)bytes);
+		} else if (bytes == -2) {
+			text += "  ...";
+		}
+		return text;
+	};
 	constexpr int columns = 5, perPage = 10, rowHeight = 52, visible = 8;
 	const SDL_FRect preview = background ? SDL_FRect{40, 180, 680, 382} : SDL_FRect{56, 171, 260, 390};
 	const int listX = background ? 768 : 360, listWidth = WIDTH - listX - 56;
@@ -4683,6 +4760,7 @@ int Launcher::ArtworkPicker(const std::vector<SteamGridDBArtwork> &artwork, bool
 			}
 		}
 		top = std::clamp(top, std::max(0, selected - visible + 1), selected);
+		wantedSize = selected;
 		Background();
 		PageHeader(icons ? "Choose an icon" : background ? "Choose Classic background" : "Choose cover", "SteamGridDB", gameName);
 		auto image = [&](int index, SDL_FRect rect) {
@@ -4705,6 +4783,11 @@ int Launcher::ArtworkPicker(const std::vector<SteamGridDBArtwork> &artwork, bool
 		} else {
 			Panel(preview.x - 10, preview.y - 10, preview.w + 20, preview.h + 20);
 			image(selected, preview);
+			std::string info = details(selected, true);
+			if (background) {
+				info += "   " + std::string(Tr("You can crop it to 16:9 next"));
+			}
+			Text(preview.x, preview.y + preview.h + 18, info, 20, palette_.dim);
 			Panel(listX - 8, 140, listWidth + 16, std::min(visible, (int)artwork.size()) * rowHeight + 16);
 			for (int i = top; i < std::min(top + visible, (int)artwork.size()); ++i) {
 				const int y = 148 + (i - top) * rowHeight;
@@ -4713,7 +4796,7 @@ int Launcher::ArtworkPicker(const std::vector<SteamGridDBArtwork> &artwork, bool
 				}
 				Text(listX + 20, y + 9, StringFromFormat(Tr("Artwork %zu").data(), (size_t)i + 1), 24,
 					 i == selected ? palette_.value : palette_.text);
-				const std::string size = StringFromFormat("%d x %d", artwork[i].width, artwork[i].height);
+				const std::string size = details(i, false);
 				Text(listX + listWidth - 20 - TextWidth(size, 20), y + 12, size, 20, palette_.dim);
 			}
 		}
@@ -4757,48 +4840,162 @@ void Launcher::DownloadArtwork(Entry &entry, bool background) {
 		}
 		matches.clear();
 	}
-	for (int pass = 0; pass < (background ? 1 : 2); ++pass) {
-		const bool backdrop = background || pass == 1;
-		std::vector<SteamGridDBArtwork> artwork;
-		SteamGridDBResult status = SteamGridDBResult::Cancelled;
-		if (!Busy("Fetching artwork", [&](const auto &cancel) {
-				status = SteamGridDB_GetArtwork(g_Config.sSteamGridDBAPIKey, matches[game].id, backdrop, &artwork, &cancel);
-			})) {
-			return;
-		}
-		if (status != SteamGridDBResult::OK) {
-			if (!backdrop || status != SteamGridDBResult::NotFound) {
-				Message("SteamGridDB", SteamGridDB_ResultMessage(status));
-			}
-			return;
-		}
-		const int choice = ArtworkPicker(artwork, backdrop, false, matches[game].name);
-		if (choice < 0) {
-			return;
-		}
-		bool saved = false;
-		if (!Busy("Downloading artwork", [&](const auto &cancel) {
-				std::vector<uint8_t> data;
-				status = SteamGridDB_DownloadImage(artwork[choice].url, &data, &cancel);
-				if (status != SteamGridDBResult::OK || cancel) {
-					return;
-				}
-				const Path output(std::string(ART_DIRECTORY) + "/" + entry.key + (backdrop ? ".background.png" : ".cover.png"));
-				const Path temporary(output.ToString() + ".tmp");
-				saved = File::WriteDataToFile(false, data.data(), data.size(), temporary) && !cancel && File::Rename(temporary, output);
-				if (!saved) {
-					File::Delete(temporary);
-				}
-			})) {
-			return;
-		}
-		if (!saved) {
-			Message("Could not save artwork",
-					status == SteamGridDBResult::OK ? "Check available storage space." : SteamGridDB_ResultMessage(status));
-			return;
-		}
-		InvalidateArtwork(entry);
+	std::vector<SteamGridDBArtwork> artwork;
+	SteamGridDBResult status = SteamGridDBResult::Cancelled;
+	if (!Busy("Fetching artwork", [&](const auto &cancel) {
+			status = SteamGridDB_GetArtwork(g_Config.sSteamGridDBAPIKey, matches[game].id, background, &artwork, &cancel);
+		})) {
+		return;
 	}
+	if (status != SteamGridDBResult::OK) {
+		Message("SteamGridDB", SteamGridDB_ResultMessage(status));
+		return;
+	}
+	const int choice = ArtworkPicker(artwork, background, false, matches[game].name);
+	if (choice < 0) {
+		return;
+	}
+	std::vector<uint8_t> data;
+	if (!Busy("Downloading artwork",
+			  [&](const auto &cancel) { status = SteamGridDB_DownloadImage(artwork[choice].url, &data, &cancel); })) {
+		return;
+	}
+	if (status != SteamGridDBResult::OK) {
+		Message("Could not download artwork", SteamGridDB_ResultMessage(status));
+		return;
+	}
+	const Path output(std::string(ART_DIRECTORY) + "/" + entry.key + (background ? ".background.png" : ".cover.png"));
+	const Path temporary(output.ToString() + ".tmp");
+	bool saved = false;
+	if (!background) {
+		Busy("Saving cover", [&](const auto &) {
+			saved = File::WriteDataToFile(false, data.data(), data.size(), temporary) && ReplaceWithFile(temporary, output);
+			if (!saved) {
+				File::Delete(temporary);
+			}
+		}, false);
+	} else {
+		int width = 0, height = 0;
+		uint8_t *pixels = DecodeArtwork(std::string((const char *)data.data(), data.size()), &width, &height);
+		if (!pixels) {
+			Message("Could not read artwork", "The image is not a PNG or JPEG up to 4096 x 4096 pixels.");
+			return;
+		}
+		ArtworkRect crop;
+		if (!CropBackground(pixels, width, height, &crop)) {
+			free(pixels);
+			return;
+		}
+		Busy("Saving background", [&](const auto &) {
+			// The Classic theme draws backgrounds at 1280 x 720: no point keeping more.
+			int outWidth = 0, outHeight = 0;
+			const std::vector<uint8_t> cropped = CropAndShrinkRGBA(pixels, width, height, crop, 1280, &outWidth, &outHeight);
+			saved = pngSave(temporary, cropped.data(), outWidth, outHeight, 4) && ReplaceWithFile(temporary, output);
+			if (!saved) {
+				File::Delete(temporary);
+			}
+		}, false);
+		free(pixels);
+	}
+	if (!saved) {
+		Message("Could not save artwork", "Check available storage space.");
+		return;
+	}
+	InvalidateArtwork(entry);
+}
+
+bool Launcher::CropBackground(const uint8_t *pixels, int width, int height, ArtworkRect *crop) {
+	const ArtworkRect full = LargestFrame16x9(width, height);
+	*crop = full;
+	SDL_Texture *texture = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, width, height);
+	if (!texture) {
+		return true;  // Can't show it: keep the centre.
+	}
+	SDL_UpdateTexture(texture, nullptr, pixels, width * 4);
+	// The frame's size relative to the largest 16:9 frame, and its centre in image pixels.
+	float zoom = 1.f, centerX = full.x + full.w / 2.f, centerY = full.y + full.h / 2.f;
+	const SDL_FRect area{40, 132, WIDTH - 80.f, 452};
+	const float scale = std::min(area.w / width, area.h / height);
+	const SDL_FRect shown{area.x + (area.w - width * scale) / 2, area.y + (area.h - height * scale) / 2, width * scale, height * scale};
+	uint64_t last = SDL_GetTicks();
+	bool accepted = false, done = false;
+	repeatDirection_ = 0;
+	stickNavigation_.Reset();
+	while (!done && Frame()) {
+		SDL_Event event{};
+		while (Poll(&event)) {
+			if (Back(event)) {
+				done = true;
+				break;
+			}
+			if (Confirm(event)) {
+				accepted = true;
+				done = true;
+				break;
+			}
+			if (Menu(event)) {
+				zoom = 1.f;
+				centerX = full.x + full.w / 2.f;
+				centerY = full.y + full.h / 2.f;
+			}
+		}
+		// Held input, so the frame glides: left stick or d-pad moves it, L / R or the right stick zooms.
+		const uint64_t now = SDL_GetTicks();
+		const float dt = std::min(0.1f, (now - last) / 1000.f);
+		last = now;
+		float moveX = 0, moveY = 0, zoomIn = 0;
+		for (const auto &[id, pad] : pads_) {
+			if (!pad) {
+				continue;
+			}
+			auto axis = [&](SDL_GamepadAxis which) {
+				const float value = SDL_GetGamepadAxis(pad, which) / 32767.f;
+				return std::fabs(value) > 0.2f ? value : 0.f;
+			};
+			auto held = [&](SDL_GamepadButton button) { return SDL_GetGamepadButton(pad, button) ? 1.f : 0.f; };
+			moveX += axis(SDL_GAMEPAD_AXIS_LEFTX) + held(SDL_GAMEPAD_BUTTON_DPAD_RIGHT) - held(SDL_GAMEPAD_BUTTON_DPAD_LEFT);
+			moveY += axis(SDL_GAMEPAD_AXIS_LEFTY) + held(SDL_GAMEPAD_BUTTON_DPAD_DOWN) - held(SDL_GAMEPAD_BUTTON_DPAD_UP);
+			zoomIn += held(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) - held(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) - axis(SDL_GAMEPAD_AXIS_RIGHTY);
+		}
+		zoom = std::clamp(zoom - zoomIn * dt * 0.6f, 0.3f, 1.f);
+		const float frameW = full.w * zoom, frameH = full.h * zoom;
+		const float speed = std::max(width, height) * 0.45f;  // Across the image in about two seconds.
+		centerX = std::clamp(centerX + moveX * speed * dt, frameW / 2, width - frameW / 2);
+		centerY = std::clamp(centerY + moveY * speed * dt, frameH / 2, height - frameH / 2);
+
+		Background();
+		PageHeader("Crop background", "SteamGridDB", Tr("The Classic theme shows the part inside the frame"));
+		SDL_RenderTexture(renderer_, texture, nullptr, &shown);
+		const SDL_FRect frame{shown.x + (centerX - frameW / 2) * scale, shown.y + (centerY - frameH / 2) * scale, frameW * scale,
+							  frameH * scale};
+		const SDL_Color shade{0, 0, 0, 170};
+		auto shadeRect = [&](float x, float y, float w, float h) {
+			if (w > 0.5f && h > 0.5f) {
+				Fill(x, y, w, h, shade);
+			}
+		};
+		shadeRect(shown.x, shown.y, shown.w, frame.y - shown.y);
+		shadeRect(shown.x, frame.y + frame.h, shown.w, shown.y + shown.h - frame.y - frame.h);
+		shadeRect(shown.x, frame.y, frame.x - shown.x, frame.h);
+		shadeRect(frame.x + frame.w, frame.y, shown.x + shown.w - frame.x - frame.w, frame.h);
+		const SDL_Color edge = palette_.accent;
+		Fill(frame.x, frame.y, frame.w, 3, edge);
+		Fill(frame.x, frame.y + frame.h - 3, frame.w, 3, edge);
+		Fill(frame.x, frame.y, 3, frame.h, edge);
+		Fill(frame.x + frame.w - 3, frame.y, 3, frame.h, edge);
+		Text(40, 600, StringFromFormat(Tr("Frame %d x %d of %d x %d, saved at up to 1280 x 720").data(), (int)frameW, (int)frameH, width, height), 20,
+			 palette_.dim);
+		Footer("Stick  Move        L / R  Zoom        Y  Reset        A  Save        B  Cancel");
+		Present();
+	}
+	SDL_DestroyTexture(texture);
+	repeatDirection_ = 0;
+	stickNavigation_.Reset();
+	crop->w = std::clamp((int)std::lround(full.w * zoom), 1, width);
+	crop->h = std::clamp((int)std::lround(full.h * zoom), 1, height);
+	crop->x = std::clamp((int)std::lround(centerX - crop->w / 2.f), 0, width - crop->w);
+	crop->y = std::clamp((int)std::lround(centerY - crop->h / 2.f), 0, height - crop->h);
+	return accepted;
 }
 
 void Launcher::ImportCover(Entry &entry) {
@@ -4816,7 +5013,7 @@ void Launcher::ImportCover(Entry &entry) {
 		uint8_t *pixels = DecodeArtwork(data, &width, &height);
 		const Path output(std::string(ART_DIRECTORY) + "/" + entry.key + ".cover.png"), temporary(output.ToString() + ".tmp");
 		if (pixels && !cancel && pngSave(temporary, pixels, width, height, 4)) {
-			imported = !cancel && File::Rename(temporary, output);
+			imported = !cancel && ReplaceWithFile(temporary, output);
 		}
 		free(pixels);
 		if (!imported) {
@@ -4832,12 +5029,18 @@ void Launcher::ImportCover(Entry &entry) {
 
 void Launcher::CoverSettings(Entry &entry) {
 	int selection = 0;
-	bool hasCustom = File::Exists(Path(std::string(ART_DIRECTORY) + "/" + entry.key + ".cover.png"));
-	const SDL_FRect cards[] = {{360, 128, WIDTH - 416, 230}, {360, 378, WIDTH - 416, 230}};
-	const char *titles[] = {"Download cover from SteamGridDB", "Choose local cover"};
-	const char *kinds[] = {"Online artwork", "Local image"};
-	const char *descriptions[] = {"Choose a game cover, then select optional background artwork for the Classic theme.",
-								  "Choose a PNG or JPEG image from SD, USB or SMB storage. It is validated and saved as PNG."};
+	const Path coverPath(std::string(ART_DIRECTORY) + "/" + entry.key + ".cover.png");
+	const Path backgroundPath(std::string(ART_DIRECTORY) + "/" + entry.key + ".background.png");
+	bool hasCustom = File::Exists(coverPath);
+	bool hasBackground = File::Exists(backgroundPath);
+	constexpr int cardCount = 3;
+	const SDL_FRect cards[cardCount] = {{360, 128, WIDTH - 416, 146}, {360, 288, WIDTH - 416, 146}, {360, 448, WIDTH - 416, 146}};
+	const char *titles[cardCount] = {"Download cover from SteamGridDB", "Download background from SteamGridDB", "Choose local cover"};
+	const char *kinds[cardCount] = {"Online artwork", "Online artwork", "Local image"};
+	const char *descriptions[cardCount] = {
+		"Replaces the current custom cover.",
+		"For the Classic theme. Crop it to 16:9 after choosing. Replaces the current background.",
+		"A PNG or JPEG image from SD, USB or SMB storage, saved as PNG."};
 	repeatDirection_ = 0;
 	stickNavigation_.Reset();
 	while (Frame()) {
@@ -4848,7 +5051,7 @@ void Launcher::CoverSettings(Entry &entry) {
 			}
 			const int direction = Navigate(event);
 			if (direction) {
-				selection = direction > 0 ? 1 : 0;
+				selection = std::clamp(selection + (direction > 0 ? 1 : -1), 0, cardCount - 1);
 			}
 			bool activate = Confirm(event);
 			if (event.type == SDL_EVENT_FINGER_UP || event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
@@ -4857,7 +5060,7 @@ void Launcher::CoverSettings(Entry &entry) {
 				if (point.y >= HEIGHT - 40) {
 					return;
 				}
-				for (int i = 0; i < 2; ++i) {
+				for (int i = 0; i < cardCount; ++i) {
 					if (SDL_PointInRectFloat(&point, &cards[i])) {
 						selection = i;
 						activate = true;
@@ -4865,19 +5068,29 @@ void Launcher::CoverSettings(Entry &entry) {
 				}
 			}
 			if (hasCustom && Button(event, SDL_GAMEPAD_BUTTON_WEST, SDLK_Y) && Ask("Remove custom cover?", entry.title)) {
-				if (!File::Delete(Path(std::string(ART_DIRECTORY) + "/" + entry.key + ".cover.png"))) {
+				if (!File::Delete(coverPath)) {
 					Message("Cover removal failed", entry.path.GetFilename());
 				}
 				InvalidateArtwork(entry);
-				hasCustom = File::Exists(Path(std::string(ART_DIRECTORY) + "/" + entry.key + ".cover.png"));
+				hasCustom = File::Exists(coverPath);
+			}
+			if (hasBackground && Button(event, SDL_GAMEPAD_BUTTON_NORTH, SDLK_X) && Ask("Remove custom background?", entry.title)) {
+				if (!File::Delete(backgroundPath)) {
+					Message("Background removal failed", entry.path.GetFilename());
+				}
+				InvalidateArtwork(entry);
+				hasBackground = File::Exists(backgroundPath);
 			}
 			if (activate) {
 				if (selection == 0) {
 					DownloadArtwork(entry, false);
+				} else if (selection == 1) {
+					DownloadArtwork(entry, true);
 				} else {
 					ImportCover(entry);
 				}
-				hasCustom = File::Exists(Path(std::string(ART_DIRECTORY) + "/" + entry.key + ".cover.png"));
+				hasCustom = File::Exists(coverPath);
+				hasBackground = File::Exists(backgroundPath);
 				repeatDirection_ = 0;
 				stickNavigation_.Reset();
 				break;
@@ -4887,17 +5100,24 @@ void Launcher::CoverSettings(Entry &entry) {
 		PageHeader("Cover settings", "Artwork", entry.title);
 		Panel(46, 161, 280, 410);
 		Cover(entry, {56, 171, 260, 390}, false);
-		for (int i = 0; i < 2; ++i) {
+		for (int i = 0; i < cardCount; ++i) {
 			const auto &card = cards[i];
 			Panel(card.x, card.y, card.w, card.h);
 			if (selection == i) {
 				Round(card.x + 8, card.y + 8, card.w - 16, card.h - 16, 4, {28, 69, 92, 255});
 			}
-			Text(card.x + 28, card.y + 24, kinds[i], 18, palette_.accent);
-			Wrapped(card.x + 28, card.y + 62, card.w - 56, Tr(titles[i]), 26, 1, selection == i ? palette_.value : palette_.text);
-			Wrapped(card.x + 28, card.y + 112, card.w - 56, Tr(descriptions[i]), 18, 4, palette_.dim);
+			Text(card.x + 28, card.y + 18, kinds[i], 18, palette_.accent);
+			Wrapped(card.x + 28, card.y + 46, card.w - 56, Tr(titles[i]), 26, 1, selection == i ? palette_.value : palette_.text);
+			Wrapped(card.x + 28, card.y + 88, card.w - 56, Tr(descriptions[i]), 18, 2, palette_.dim);
 		}
-		Footer(hasCustom ? "A  Choose        Y  Remove custom cover        B  Back" : "A  Choose        B  Back");
+		std::string hints = "A  Choose";
+		if (hasCustom) {
+			hints += "        Y  Remove cover";
+		}
+		if (hasBackground) {
+			hints += "        X  Remove background";
+		}
+		Footer(hints + "        B  Back");
 		Present();
 	}
 }
